@@ -1,0 +1,86 @@
+{
+  "name": "boundary-vision",
+  "version": "0.1.0",
+  "private": true,
+  "author": "Boundary Vision",
+  "description": "Local cricket object detection desktop application",
+  "main": "dist-electron/main.js",
+  "packageManager": "npm@11.20.0",
+  "engines": {
+    "node": ">=26.11.1"
+  },
+  "scripts": {
+    "dev": "concurrently -k \"vite\" \"wait-on http://localhost:5173 && tsc -p tsconfig.electron.json && electron .\"",
+    "build": "tsc -p tsconfig.json && tsc -p tsconfig.electron.json && vite build",
+    "preview": "vite preview",
+    "package:win": "npm run build && powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package-windows.ps1",
+    "release:win": "npm run build && powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package-windows.ps1 -Publish"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.5",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^6.1.2",
+    "concurrently": "^10.0.6",
+    "electron": "^45.0.0",
+    "electron-builder": "^26.18.0",
+    "lucide-react": "^1.61.0",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.5",
+    "wait-on": "^9.5.1"
+  },
+  "allowScripts": {
+    "electron-winstaller@5.4.0": true
+  },
+  "build": {
+    "appId": "com.boundaryvision.desktop",
+    "productName": "Boundary Vision",
+    "asar": true,
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**",
+      "dist-electron/**",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "../backend/dist/boundary-worker",
+        "to": "backend/boundary-worker"
+      },
+      {
+        "from": "build-resources/ffmpeg",
+        "to": "ffmpeg"
+      },
+      {
+        "from": "build-resources/models",
+        "to": "models"
+      }
+    ],
+    "win": {
+      "icon": "build/icon.ico",
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "perMachine": false,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true
+    },
+    "artifactName": "Boundary-Vision-Setup-${version}-${arch}.${ext}"
+  },
+  "dependencies": {
+    "electron-updater": "^6.8.11"
+  }
+}

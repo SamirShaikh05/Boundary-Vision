@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "provider": "static-https",
+  "baseUrl": null,
+  "assetPathTemplate": "/models/{modelId}/{version}/{filename}",
+  "versionPolicy": "immutable",
+  "notes": [
+    "Set baseUrl only after a controlled HTTPS origin has been provisioned.",
+    "The Windows packaging script accepts BOUNDARY_VISION_MODEL_BASE_URL and generates URLs from each registry ID, version, and checkpoint filename.",
+    "This file is a configuration example; no endpoint or credential is supplied."
+  ]
+}

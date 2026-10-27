@@ -1,0 +1,51 @@
+{
+  "schemaVersion": 2,
+  "models": [
+    {
+      "id": "yolo26n",
+      "name": "YOLO26n — Lightweight",
+      "description": "Lightweight cricket model intended for lower resource use.",
+      "classes": [
+        "Bat",
+        "Ball",
+        "Stump"
+      ],
+      "latestVersion": "baseline-50-epoch",
+      "versions": [
+        {
+          "version": "baseline-50-epoch",
+          "checkpointFilename": "cricket_yolo26n_best.pt",
+          "expectedSizeBytes": 5430469,
+          "sha256": "34b16af862199dcf11165e37fd5907ab9bfcd6b29d8e094547851c5265e4c450",
+          "downloadUrl": null,
+          "developmentSource": "cricket_yolo26n_best.pt",
+          "minimumPython": "3.15",
+          "format": "ultralytics-yolo"
+        }
+      ]
+    },
+    {
+      "id": "yolo26l",
+      "name": "YOLO26l — Higher accuracy",
+      "description": "Larger cricket model with stronger verified validation metrics.",
+      "classes": [
+        "Bat",
+        "Ball",
+        "Stump"
+      ],
+      "latestVersion": "baseline-50-epoch",
+      "versions": [
+        {
+          "version": "baseline-50-epoch",
+          "checkpointFilename": "cricket_yolo26l_best.pt",
+          "expectedSizeBytes": 52958181,
+          "sha256": "3c0844e8221b33f30665e7f1c33cccad419301ec5d2de774d66c7bfb3e3f5932",
+          "downloadUrl": null,
+          "developmentSource": "cricket_yolo26l_best.pt",
+          "minimumPython": "3.15",
+          "format": "ultralytics-yolo"
+        }
+      ]
+    }
+  ]
+}

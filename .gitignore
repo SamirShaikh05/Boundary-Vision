@@ -1,0 +1,63 @@
+# Python environments, caches, and test output
+.venv*/
+venv/
+backend/.venv*/
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.hypothesis/
+.tox/
+.nox/
+.coverage
+.coverage.*
+htmlcov/
+*.egg-info/
+pip-wheel-metadata/
+
+# JavaScript dependencies, caches, and generated output
+node_modules/
+frontend/dist/
+frontend/dist-electron/
+frontend/.vite/
+*.tsbuildinfo
+.eslintcache
+
+# Packaged resources and reproducible build output
+backend/dist/
+runtime/build/
+frontend/release/
+frontend/build-resources/
+
+# Runtime temporary files and logs
+runtime/temp/*
+!runtime/temp/.gitkeep
+*.log
+*.tmp
+*.temp
+*.part
+
+# Local environment files and credentials
+.env
+.env.*
+!.env.example
+!.env.template
+.env.*.local
+.secrets/
+*.secret
+*.secrets
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*.keystore
+
+# Local editor and operating-system files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+Desktop.ini
