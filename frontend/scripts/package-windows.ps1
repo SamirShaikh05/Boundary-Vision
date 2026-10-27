@@ -91,7 +91,7 @@ $env:YOLO_AUTOINSTALL = 'false'
   --paths (Join-Path $projectDir 'backend') `
   --distpath (Join-Path $projectDir 'backend\dist') `
   --workpath $workDir --specpath $specDir `
-  --collect-all ultralytics --collect-all cv2 `
+  --collect-all ultralytics --collect-all cv2 --collect-all torchvision `
   --hidden-import app.image_inference --hidden-import app.video_inference `
   (Join-Path $projectDir 'backend\worker_entry.py')
 if ($LASTEXITCODE -ne 0) { throw 'PyInstaller could not build the standalone Python worker.' }
