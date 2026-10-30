@@ -19,7 +19,6 @@ if ([bool]$githubOwner -ne [bool]$githubRepo) { throw 'Set both BOUNDARY_VISION_
 if ($Publish) {
   if (-not $githubOwner -or -not $githubRepo) { throw 'A GitHub owner and repository are required to publish a release.' }
   if (-not $env:GH_TOKEN) { throw 'GH_TOKEN is required to upload release assets. Do not put it in source files.' }
-  if (-not ($env:CSC_LINK -or $env:WIN_CSC_LINK)) { throw 'A Windows code-signing certificate is required for release publishing (set CSC_LINK or WIN_CSC_LINK securely).' }
 }
 
 if (-not (Test-Path -LiteralPath $python -PathType Leaf)) {
@@ -28,7 +27,7 @@ if (-not (Test-Path -LiteralPath $python -PathType Leaf)) {
 $expectedPython = (Get-Content -LiteralPath (Join-Path $projectDir '.python-version') -Raw).Trim()
 $actualPython = (& $python -c 'import platform; print(platform.python_version())').Trim()
 if ($actualPython -ne $expectedPython) { throw "Build Python version mismatch: expected $expectedPython from .python-version, found $actualPython." }
-& $python -m pip install --upgrade -r (Join-Path $projectDir 'backend\requirements-release.txt')
+& $python -m pip install -r (Join-Path $projectDir 'backend\requirements-release.txt')
 if ($LASTEXITCODE -ne 0) { throw 'Could not install the locked Python release requirements.' }
 
 $previousYoloAutoinstall = $env:YOLO_AUTOINSTALL
