@@ -2,13 +2,14 @@ from __future__ import annotations
 
 from pathlib import Path
 import os
+import shutil
 import tempfile
 import threading
 
 import cv2
 import numpy as np
 
-from .annotations import write_createml, write_voc, write_yolo
+from .annotations import ANNOTATION_EXTENSIONS, annotation_filename, write_classes_txt, write_createml, write_voc, write_yolo
 from .devices import validate_device
 from .model_cache import ModelCache
 from .paths import SUPPORTED_IMAGE_SUFFIXES
@@ -25,13 +26,24 @@ def _read_image(path: Path) -> np.ndarray:
     return image
 
 
-def _safe_output_path(directory: Path, stem: str, suffix: str) -> Path:
-    candidate = directory / f"{stem}{suffix}"
+def _resolve_candidate_stem(
+    output_dir: Path, base_stem: str, image_suffix: str,
+    output_image: bool, formats: list[str], used_stems: set[str],
+) -> str:
+    candidate = base_stem
     index = 1
-    while candidate.exists():
-        candidate = directory / f"{stem}_{index}{suffix}"
+    format_suffixes = [ANNOTATION_EXTENSIONS[fmt] for fmt in formats]
+    while True:
+        if candidate not in used_stems:
+            image_targets = [output_dir / f"{candidate}_annotated{image_suffix}"] if output_image else []
+            if any(fmt in {"voc", "createml"} for fmt in formats):
+                image_targets.append(output_dir / f"{candidate}{image_suffix}")
+            format_targets = [output_dir / f"{candidate}{sfx}" for sfx in format_suffixes]
+            if all(not target.exists() for target in image_targets + format_targets):
+                used_stems.add(candidate)
+                return candidate
+        candidate = f"{base_stem}_{index}"
         index += 1
-    return candidate
 
 
 def _write_image_atomically(path: Path, image: np.ndarray) -> None:
@@ -49,6 +61,20 @@ def _write_image_atomically(path: Path, image: np.ndarray) -> None:
             os.unlink(temp_name)
 
 
+def _copy_source_image(source: Path, target: Path) -> None:
+    created = False
+    try:
+        with source.open("rb") as input_stream:
+            output_stream = target.open("xb")
+            created = True
+            with output_stream:
+                shutil.copyfileobj(input_stream, output_stream)
+    except Exception:
+        if created:
+            target.unlink(missing_ok=True)
+        raise
+
+
 def process_images(
     paths: list[Path], output_dir: Path, model_id: str, model_path: str,
     model_classes: list[str], model_sha256: str, model_size_bytes: int, confidence: float,
@@ -64,8 +90,10 @@ def process_images(
     valid_formats = {"yolo", "voc", "createml"}
     if any(item not in valid_formats for item in formats):
         raise ValueError("One or more annotation formats are not supported.")
+    if len(formats) > 1:
+        raise ValueError("At most one annotation format can be selected.")
     if not output_image and not formats:
-        raise ValueError("Select annotated images, annotation exports, or both.")
+        raise ValueError("Select annotated images, an annotation export, or both.")
     for path in paths:
         if path.suffix.lower() not in SUPPORTED_IMAGE_SUFFIXES or not path.is_file():
             raise ValueError(f"Not a supported image file: {path}")
@@ -75,6 +103,7 @@ def process_images(
     results: list[dict] = []
     group_size = batch_size or 1
     total = len(paths)
+    used_stems: set[str] = set()
     for offset in range(0, total, group_size):
         if cancel and cancel.is_set():
             raise RuntimeError("Image processing cancelled. Finished outputs were kept.")
@@ -101,24 +130,37 @@ def process_images(
                         class_id, str(model.names.get(class_id, f"Class {class_id}")),
                         float(box.conf.item()), float(x1), float(y1), float(x2), float(y2),
                     ))
+            stem = _resolve_candidate_stem(
+                output_dir, path.stem, path.suffix.lower(),
+                output_image, formats, used_stems,
+            )
             out_image_path = None
             annotation_paths: list[str] = []
             if output_image:
-                out_image_path = _safe_output_path(output_dir, path.stem, "_annotated" + path.suffix.lower())
+                out_image_path = output_dir / f"{stem}_annotated{path.suffix.lower()}"
                 _write_image_atomically(out_image_path, prediction.plot())
+            needs_source_image = any(fmt in {"voc", "createml"} for fmt in formats)
+            source_image_name = f"{stem}{path.suffix.lower()}"
+            if needs_source_image:
+                _copy_source_image(path, output_dir / source_image_name)
             for fmt in formats:
-                suffix = {"yolo": ".txt", "voc": ".xml", "createml": ".json"}[fmt]
-                target = _safe_output_path(output_dir, path.stem, f"_{fmt}" + suffix)
+                target = output_dir / annotation_filename(stem, fmt)
+                image_ref = Path(source_image_name)
                 if fmt == "yolo":
                     write_yolo(target, detections, width, height)
                 elif fmt == "voc":
-                    write_voc(target, path, detections, width, height)
+                    write_voc(target, image_ref, detections, width, height)
                 else:
-                    write_createml(target, path, detections, width, height)
+                    write_createml(target, image_ref, detections, width, height)
                 annotation_paths.append(str(target))
             result = ImageResult(str(path), str(out_image_path) if out_image_path else None,
                                  annotation_paths, width, height, model_id, actual_device, detections).to_dict()
             results.append(result)
             emit({"event": "progress", "completed": len(results), "total": total,
                   "current": path.name, "result": result})
+    if "yolo" in formats:
+        classes_path = output_dir / "classes.txt"
+        if not classes_path.exists():
+            class_names = [model.names.get(i, f"class_{i}") for i in range(len(model.names))]
+            write_classes_txt(classes_path, class_names)
     return results

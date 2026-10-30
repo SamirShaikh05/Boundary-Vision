@@ -18,7 +18,7 @@ import cv2
 import numpy as np
 from ultralytics import YOLO
 
-from .annotations import write_createml, write_voc, write_yolo
+from .annotations import annotation_filename, write_createml, write_voc, write_yolo
 from .devices import validate_device
 from .model_cache import ModelCache
 from .schemas import Detection
@@ -169,8 +169,10 @@ def process_video(
         raise ValueError("Inference FPS must be 0.1–120 and output FPS must be 1–60.")
     if any(item not in {"yolo", "voc", "createml"} for item in formats):
         raise ValueError("One or more frame annotation formats are not supported.")
+    if len(formats) > 1:
+        raise ValueError("At most one frame annotation format can be selected.")
     if not Path(ffmpeg).is_file() or not Path(ffprobe).is_file():
-        raise FileNotFoundError("Bundled FFmpeg tools are missing. Repair or reinstall Boundary Vision.")
+        raise FileNotFoundError("Managed FFmpeg tools are missing. Retry video processing to set them up.")
 
     metadata = _run_probe(ffprobe, source)
     width, height, duration = metadata["width"], metadata["height"], metadata["duration"]
@@ -268,7 +270,7 @@ def process_video(
                     if formats:
                         annotation_index += 1
                         label_stem = f"{stem}_frame_{annotation_index:07d}_{round(relative_time * 1000):012d}ms"
-                        _write_frame_annotations(annotation_temp, label_stem, source, latest_detections, width, height, formats)
+                        _write_frame_annotations(annotation_temp, label_stem, source, frame, latest_detections, width, height, formats)
                     next_inference = (math.floor(relative_time * inference_fps + 1e-8) + 1) / inference_fps
                 latest_frame = frame
                 while output_index < output_count and output_index / output_fps <= relative_time + 1e-9:
@@ -339,12 +341,18 @@ def _write_output_frame(process: subprocess.Popen, frame: np.ndarray, detections
         raise RuntimeError("FFmpeg stopped while encoding video: " + str(exc)) from exc
 
 
-def _write_frame_annotations(directory: Path, stem: str, source: Path, detections: list[Detection], width: int, height: int, formats: list[str]) -> None:
+def _write_frame_annotations(directory: Path, stem: str, source: Path, frame: np.ndarray, detections: list[Detection], width: int, height: int, formats: list[str]) -> None:
     image_reference = Path(f"{stem}.png")
+    if any(format_name in {"voc", "createml"} for format_name in formats):
+        success, encoded = cv2.imencode(".png", frame)
+        if not success:
+            raise OSError(f"Could not encode annotation frame: {image_reference.name}")
+        with (directory / image_reference).open("xb") as stream:
+            stream.write(encoded.tobytes())
     for format_name in formats:
         if format_name == "yolo":
-            write_yolo(directory / f"{stem}.txt", detections, width, height)
+            write_yolo(directory / annotation_filename(stem, format_name), detections, width, height)
         elif format_name == "voc":
-            write_voc(directory / f"{stem}.xml", image_reference, detections, width, height)
+            write_voc(directory / annotation_filename(stem, format_name), image_reference, detections, width, height)
         elif format_name == "createml":
-            write_createml(directory / f"{stem}.json", image_reference, detections, width, height)
+            write_createml(directory / annotation_filename(stem, format_name), image_reference, detections, width, height)

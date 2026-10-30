@@ -15,7 +15,6 @@ export type RegistryModelVersion = {
   sha256: string
   downloadUrl: string | null
   developmentSource: string | null
-  minimumPython?: string
 }
 
 export type RegistryModel = {
@@ -33,7 +32,7 @@ export type ModelVersionCard = RegistryModelVersion & {
   canInstall: boolean
   canRemove: boolean
   detail: string
-  runtimeCompatible: boolean
+  formatSupported: boolean
 }
 
 export type ModelCard = Omit<RegistryModel, 'versions'> & {
@@ -43,7 +42,8 @@ export type ModelCard = Omit<RegistryModel, 'versions'> & {
   status: ModelVersionCard['status']
   source: ModelVersionCard['source']
   detail: string
-  runtimeCompatible: boolean
+  formatSupported: boolean
+  updateAvailable: boolean
 }
 
 type Progress = { modelId: string; version: string; stage: 'download' | 'verify' | 'validate' | 'install'; receivedBytes: number; totalBytes: number }
@@ -56,16 +56,30 @@ const safeVersion = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/
 const safeFilename = /^[a-zA-Z0-9._-]+\.pt$/
 const supportedFormats = new Set(['ultralytics-yolo'])
 
+export function modelHasUpdate(latestVersion: string, installedVersions: string[]): boolean {
+  return installedVersions.some(version => version !== latestVersion)
+}
+
+export function validateModelVersionRequest(modelId: unknown, version: unknown): { modelId: string; version: string } {
+  if (typeof modelId !== 'string' || !safeId.test(modelId) || typeof version !== 'string' || !safeVersion.test(version)) throw new Error('Invalid model ID or version.')
+  return { modelId, version }
+}
+
 export class ModelManager {
   private registryPromise: Promise<RegistryModel[]> | null = null
+  private registryCache: RegistryModel[] | null = null
+  private registryCheckedAt = 0
   private readonly abortControllers = new Map<string, AbortController>()
   private readonly installingModels = new Set<string>()
   private activeInference: { id: string; version: string } | null = null
-  private pythonVersion: string | null = null
 
   constructor(private readonly paths: ManagerPaths, private readonly validateCheckpoint: ModelValidator) {}
 
-  setPythonVersion(version: string) { this.pythonVersion = version }
+  async refreshRegistry(): Promise<{ models: ModelCard[]; selectedId: string | null; selectedVersion: string | null; storagePath: string }> {
+    this.registryPromise = null
+    this.registryCheckedAt = 0
+    return this.list()
+  }
   hasActiveWork(): boolean { return !!this.activeInference || this.installingModels.size > 0 }
   beginInference(modelId: string, version: string): void {
     if (this.activeInference) throw new Error('Another inference task is already using a model.')
@@ -85,16 +99,38 @@ export class ModelManager {
   }
 
   private async registry(): Promise<RegistryModel[]> {
-    if (!this.registryPromise) {
-      this.registryPromise = fs.promises.readFile(this.paths.registryPath, 'utf8').then(raw => {
-        const parsed = JSON.parse(raw) as { schemaVersion?: number; models?: unknown[] }
-        if (parsed.schemaVersion !== 2 || !Array.isArray(parsed.models)) throw new Error('The model registry has an unsupported format.')
-        const models = parsed.models.map(validateRegistryModel)
-        if (new Set(models.map(item => item.id)).size !== models.length) throw new Error('The model registry contains duplicate model IDs.')
-        return models
-      })
+    if (!this.registryPromise || Date.now() - this.registryCheckedAt > 15 * 60 * 1000) {
+      this.registryCheckedAt = Date.now()
+      const previousRegistry = this.registryCache
+      this.registryPromise = (async () => {
+        try {
+          const controller = new AbortController()
+          const timeout = setTimeout(() => controller.abort(), 8000)
+          try {
+            const response = await fetch('https://raw.githubusercontent.com/SamirShaikh05/Boundary-Vision/main/models/registry.json', { signal: controller.signal, headers: { accept: 'application/json' } })
+            if (!response.ok) throw new Error(`Remote model registry returned HTTP ${response.status}.`)
+            const models = validateRegistry(JSON.parse(await response.text()))
+            this.registryCache = models
+            return models
+          } finally { clearTimeout(timeout) }
+        } catch {
+          // Offline or invalid remote metadata must never prevent local inference.
+          if (previousRegistry) return previousRegistry
+          try {
+            const models = await this.readBundledRegistry()
+            this.registryCache = models
+            return models
+          } catch { throw new Error('The remote and bundled model registries are unavailable or invalid.') }
+        }
+      })()
     }
     return this.registryPromise
+  }
+
+  private async readBundledRegistry(): Promise<RegistryModel[]> {
+    return fs.promises.readFile(this.paths.registryPath, 'utf8').then(raw => {
+      return validateRegistry(JSON.parse(raw))
+    })
   }
 
   async list(): Promise<{ models: ModelCard[]; selectedId: string | null; selectedVersion: string | null; storagePath: string }> {
@@ -106,8 +142,10 @@ export class ModelManager {
         : null
       const versions = await Promise.all(model.versions.map(version => this.versionCard(model, version, selectedId, selectedVersion)))
       const latest = versions.find(item => item.version === model.latestVersion)!
+      const hasOlderInstalled = modelHasUpdate(model.latestVersion, versions.filter(item => item.status === 'installed').map(item => item.version))
       return { ...model, classes: latest.classes ?? model.classes, versions, selected: !!selectedVersion, selectedVersion, status: latest.status,
-        source: latest.source, detail: latest.detail, runtimeCompatible: latest.runtimeCompatible }
+        source: latest.source, detail: latest.detail, formatSupported: latest.formatSupported,
+        updateAvailable: hasOlderInstalled && latest.canInstall }
     }))
     return { models, selectedId, selectedVersion: typeof settings.selectedModelVersion === 'string' ? settings.selectedModelVersion : selectedId ? models.find(item => item.id === selectedId)?.latestVersion ?? null : null, storagePath: this.paths.managedModelsDir }
   }
@@ -124,8 +162,8 @@ export class ModelManager {
       const source: ModelVersionCard['source'] = 'managed'
       const result = versionCard(version, valid ? 'installed' : 'corrupt', source, valid
         ? 'Verified in Boundary Vision storage.' : 'The stored checkpoint failed size or SHA-256 verification.')
-      result.runtimeCompatible = this.isCompatible(version)
-      result.canInstall = !valid && result.runtimeCompatible && (!!version.downloadUrl || !!version.developmentSource && await this.validFile(this.developmentPath(version), version))
+      result.formatSupported = this.isFormatSupported(version)
+      result.canInstall = !valid && result.formatSupported && (!!version.downloadUrl || !!version.developmentSource && await this.validFile(this.developmentPath(version), version))
       result.canRemove = valid && source === 'managed' && !(model.id === selectedId && version.version === selectedVersion)
       return result
     }
@@ -135,8 +173,8 @@ export class ModelManager {
         const valid = await this.validFile(sourcePath, version)
         const result = versionCard(version, valid ? 'installed' : 'corrupt', 'development', valid
           ? 'Using the verified local development checkpoint.' : 'The local development checkpoint failed size or SHA-256 verification.')
-        result.runtimeCompatible = this.isCompatible(version)
-        result.canInstall = valid && result.runtimeCompatible
+        result.formatSupported = this.isFormatSupported(version)
+        result.canInstall = valid && result.formatSupported
         result.canRemove = false
         return result
       }
@@ -144,15 +182,15 @@ export class ModelManager {
     const status = version.downloadUrl ? 'available' : 'not-configured'
     const result = versionCard(version, status, version.downloadUrl ? 'remote' : 'none', version.downloadUrl
       ? 'A download source is configured.' : 'No download source is configured for this version.')
-    result.runtimeCompatible = this.isCompatible(version)
-    result.canInstall = status === 'available' && result.runtimeCompatible
+    result.formatSupported = this.isFormatSupported(version)
+    result.canInstall = status === 'available' && result.formatSupported
     result.canRemove = false
     return result
   }
 
   async select(modelId: string, versionName: string): Promise<void> {
     const { model, version } = await this.getVersion(modelId, versionName)
-    if (!this.isCompatible(version)) throw new Error(`${model.name} ${version.version} is not compatible with the installed Python runtime or model format.`)
+    if (!this.isFormatSupported(version)) throw new Error(`Model format "${version.format}" is not supported by this application.`)
     const checkpoint = await this.resolveInstalledPath(model, version)
     if (!checkpoint || !(await this.validFile(checkpoint, version))) throw new Error(`Install and verify ${model.name} ${version.version} before selecting it.`)
     await this.validateCheckpoint(model, version, checkpoint)
@@ -164,7 +202,7 @@ export class ModelManager {
 
   async resolveForInference(modelId: string, versionName: string): Promise<{ id: string; version: string; path: string; classes: string[]; sha256: string; sizeBytes: number }> {
     const { model, version } = await this.getVersion(modelId, versionName)
-    if (!this.isCompatible(version)) throw new Error(`${model.name} ${version.version} is not compatible with the installed Python runtime or model format.`)
+    if (!this.isFormatSupported(version)) throw new Error(`Model format "${version.format}" is not supported by this application.`)
     const checkpoint = await this.resolveInstalledPath(model, version)
     if (!checkpoint || !(await this.validFile(checkpoint, version))) throw new Error(`${model.name} ${version.version} is not installed or failed integrity verification. Open Model Manager to repair it.`)
     return { id: model.id, version: version.version, path: checkpoint, classes: version.classes ?? model.classes, sha256: version.sha256, sizeBytes: version.expectedSizeBytes }
@@ -177,7 +215,7 @@ export class ModelManager {
     this.installingModels.add(key)
     try {
       const { model, version } = await this.getVersion(modelId, versionName)
-      if (!this.isCompatible(version)) throw new Error(`${model.name} ${version.version} is not compatible with the installed Python runtime or model format.`)
+      if (!this.isFormatSupported(version)) throw new Error(`Model format "${version.format}" is not supported by this application.`)
       const sourcePath = version.developmentSource ? this.developmentPath(version) : null
       const sourceReady = sourcePath ? await this.validFile(sourcePath, version) : false
       if (!sourceReady && !version.downloadUrl) throw new Error(`No download source is configured for ${model.name} ${version.version}.`)
@@ -294,17 +332,8 @@ export class ModelManager {
     return { model, version }
   }
 
-  private isCompatible(version: RegistryModelVersion): boolean {
-    if (!supportedFormats.has(version.format)) return false
-    if (!version.minimumPython) return true
-    if (!this.pythonVersion) return false
-    const current = this.pythonVersion.split('.').map(Number)
-    const minimum = version.minimumPython.split('.').map(Number)
-    for (let index = 0; index < Math.max(current.length, minimum.length); index++) {
-      const left = current[index] ?? 0, right = minimum[index] ?? 0
-      if (left !== right) return left > right
-    }
-    return true
+  private isFormatSupported(version: RegistryModelVersion): boolean {
+    return supportedFormats.has(version.format)
   }
 
   private developmentPath(version: RegistryModelVersion): string { return path.resolve(this.paths.developmentModelsDir, version.developmentSource!) }
@@ -384,6 +413,15 @@ function validateRegistryModel(value: unknown): RegistryModel {
   return { id: model.id, name: model.name, description: model.description, classes: model.classes as string[], latestVersion: model.latestVersion, versions }
 }
 
+export function validateRegistry(value: unknown): RegistryModel[] {
+  if (!value || typeof value !== 'object') throw new Error('The model registry has an unsupported format.')
+  const registry = value as { schemaVersion?: unknown; models?: unknown }
+  if (registry.schemaVersion !== 2 || !Array.isArray(registry.models) || registry.models.length === 0) throw new Error('The model registry has an unsupported format.')
+  const models = registry.models.map(validateRegistryModel)
+  if (new Set(models.map(item => item.id)).size !== models.length) throw new Error('The model registry contains duplicate model IDs.')
+  return models
+}
+
 function validateRegistryVersion(value: unknown): RegistryModelVersion {
   if (!value || typeof value !== 'object') throw new Error('The model registry contains invalid version metadata.')
   const version = value as Record<string, unknown>
@@ -394,19 +432,19 @@ function validateRegistryVersion(value: unknown): RegistryModelVersion {
   if (typeof version.checkpointFilename !== 'string' || !safeFilename.test(version.checkpointFilename)) throw new Error(`Checkpoint filename is invalid for version ${version.version}.`)
   if (typeof version.expectedSizeBytes !== 'number' || !Number.isSafeInteger(version.expectedSizeBytes) || version.expectedSizeBytes < 1) throw new Error(`Expected file size is invalid for version ${version.version}.`)
   if (typeof version.sha256 !== 'string' || !/^[a-f0-9]{64}$/.test(version.sha256)) throw new Error(`SHA-256 is invalid for version ${version.version}.`)
-  if (version.downloadUrl !== null) {
+  if (version.downloadUrl !== null && version.downloadUrl !== undefined) {
     if (typeof version.downloadUrl !== 'string') throw new Error(`Download URL is invalid for version ${version.version}.`)
     let url: URL
     try { url = new URL(version.downloadUrl) } catch { throw new Error(`Download URL is invalid for version ${version.version}.`) }
     if (url.protocol !== 'https:' || url.username || url.password) throw new Error(`Download URL must use HTTPS and omit credentials for version ${version.version}.`)
   }
-  if (version.developmentSource !== null && (typeof version.developmentSource !== 'string' || !safeFilename.test(version.developmentSource))) throw new Error(`Development source is invalid for version ${version.version}.`)
-  if (version.minimumPython !== undefined && (typeof version.minimumPython !== 'string' || !/^\d+\.\d+(?:\.\d+)?$/.test(version.minimumPython))) throw new Error(`Minimum Python version is invalid for version ${version.version}.`)
+  if (version.developmentSource !== null && version.developmentSource !== undefined && (typeof version.developmentSource !== 'string' || !safeFilename.test(version.developmentSource))) throw new Error(`Development source is invalid for version ${version.version}.`)
+  delete version.minimumPython
   return version as unknown as RegistryModelVersion
 }
 
 function versionCard(version: RegistryModelVersion, status: ModelVersionCard['status'], source: ModelVersionCard['source'], detail: string): ModelVersionCard {
-  return { ...version, status, source, canInstall: false, canRemove: false, detail, runtimeCompatible: true }
+  return { ...version, status, source, canInstall: false, canRemove: false, detail, formatSupported: supportedFormats.has(version.format) }
 }
 
 async function exists(filePath: string): Promise<boolean> {

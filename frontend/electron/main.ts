@@ -1,5 +1,5 @@
 import { app, BrowserWindow, dialog, ipcMain, protocol } from 'electron'
-import { execFile, spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
+import { execFile, execFileSync, spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import path from 'node:path'
 import fs from 'node:fs'
 import { Readable } from 'node:stream'
@@ -7,8 +7,12 @@ import { randomUUID } from 'node:crypto'
 import { pathToFileURL } from 'node:url'
 import { autoUpdater } from 'electron-updater'
 import type { LabelImgConfig, LabelImgResult, ProcessOptions } from './types'
-import { ModelManager, type RegistryModel, type RegistryModelVersion } from './modelManager'
+import { ModelManager, validateModelVersionRequest, type RegistryModel, type RegistryModelVersion } from './modelManager'
+import { cancelManagedFfmpegSetup, ensureManagedFfmpegTools, type ManagedFfmpegTools } from './ffmpegManager'
 import type { UpdateState } from './types'
+import { validateAnnotationFormats } from './requestValidation'
+import { validateLabelImgRuntime } from './labelImgRuntime'
+import { isAllowedUpdateTransition } from './updateState'
 
 protocol.registerSchemesAsPrivileged([{ scheme: 'bvmedia', privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true } }])
 
@@ -16,12 +20,13 @@ const here = __dirname
 const projectRoot = path.resolve(here, '..', '..')
 const backendDir = path.join(projectRoot, 'backend')
 const frontendDir = path.resolve(here, '..')
-const pythonExe = process.platform === 'win32'
-  ? path.join(backendDir, '.venv', 'Scripts', 'python.exe')
-  : path.join(backendDir, '.venv', 'bin', 'python')
-const workerExe = path.join(process.resourcesPath, 'backend', 'boundary-worker', process.platform === 'win32' ? 'boundary-worker.exe' : 'boundary-worker')
-const ffmpegPath = app.isPackaged ? path.join(process.resourcesPath, 'ffmpeg', process.platform === 'win32' ? 'ffmpeg.exe' : 'ffmpeg') : findExecutable('ffmpeg')
-const ffprobePath = app.isPackaged ? path.join(process.resourcesPath, 'ffmpeg', process.platform === 'win32' ? 'ffprobe.exe' : 'ffprobe') : findExecutable('ffprobe')
+const bundledWorkerDir = path.join(process.resourcesPath, 'backend', 'boundary-worker')
+const bundledWorkerExecutable = path.join(bundledWorkerDir, process.platform === 'win32' ? 'boundary-worker.exe' : 'boundary-worker')
+
+function inspectLabelImgPython(directory: string) {
+  return validateLabelImgRuntime(directory, process.platform, fileExists, (executable, args) =>
+    execFileSync(executable, args, { encoding: 'utf8', windowsHide: true }))
+}
 const imageExtensions = new Set(['.jpg', '.jpeg', '.png', '.bmp', '.webp', '.tif', '.tiff'])
 const videoExtensions = new Set(['.mp4', '.mov', '.mkv', '.avi', '.webm', '.m4v', '.mpg', '.mpeg', '.ts', '.3gp'])
 const settingsPath = path.join(app.getPath('userData'), 'settings.json')
@@ -37,8 +42,9 @@ let cancellationTimer: NodeJS.Timeout | undefined
 let modelManager: ModelManager
 let updateInstallationRequested = false
 let updateState: UpdateState = { currentVersion: app.getVersion(), status: 'disabled', configured: false, message: 'Application updates are available in packaged release builds.' }
+let applicationCheck: Promise<UpdateState> | null = null
 
-type LabelImgPreference = { path?: string; kind?: 'executable' | 'script' | 'python'; pythonPath?: string }
+type LabelImgPreference = { path?: string }
 function readLabelImgPreference(): LabelImgPreference {
   try { return JSON.parse(fs.readFileSync(settingsPath, 'utf8')).labelImg ?? {} } catch { return {} }
 }
@@ -53,47 +59,26 @@ function writeLabelImgPreference(value: LabelImgPreference) {
 }
 function getLabelImgConfig(message?: string): LabelImgConfig {
   const preference = readLabelImgPreference()
-  const configured = !!preference.path && !!preference.kind
-  const launchExists = configured && fs.existsSync(preference.path!) && fs.statSync(preference.path!).isFile()
-    && (preference.kind !== 'script' || (!!preference.pythonPath && fs.existsSync(preference.pythonPath)))
-  return { path: preference.path ?? null, kind: preference.kind ?? null, pythonPath: preference.pythonPath ?? null,
-    available: !!launchExists, message: message ?? (launchExists ? `Configured ${preference.kind}: ${preference.path}` : configured ? 'The configured LabelImg path is missing or incomplete.' : 'LabelImg is optional and is not configured.') }
+  const directory = preference.path
+  const scriptAvailable = !!directory && directoryExists(directory) && fileExists(path.join(directory, 'labelImg.py'))
+  const runtime = scriptAvailable && directory ? inspectLabelImgPython(directory) : null
+  const available = scriptAvailable && !!runtime?.executable
+  return { path: directory ?? null, available: !!available,
+    message: message ?? (available ? `LabelImg folder: ${directory}` : !directory ? 'LabelImg is optional and is not configured.' : !scriptAvailable ? 'The configured folder does not contain labelImg.py.' : runtime?.error ?? 'Could not validate the LabelImg environment.') }
 }
 function fileExists(file: string) { try { return fs.statSync(file).isFile() } catch { return false } }
-function candidatesInFolder(folder: string): Array<{ path: string; kind: 'executable' | 'script' | 'python'; pythonPath?: string }> {
-  const possible: Array<{ path: string; kind: 'executable' | 'script' | 'python'; pythonPath?: string }> = []
-  const known = ['labelImg.exe', 'labelimg.exe', 'labelImg.py', 'labelimg.py']
-  for (const name of known) {
-    const candidate = path.join(folder, name)
-    if (fileExists(candidate)) possible.push({ path: candidate, kind: name.endsWith('.py') ? 'script' : 'executable' })
+function directoryExists(directory: string) { try { return fs.statSync(directory).isDirectory() } catch { return false } }
+async function chooseLabelImgFolder(): Promise<LabelImgConfig> {
+  const selected = await dialog.showOpenDialog(mainWindow!, { title: 'Select the folder containing labelImg.py', properties: ['openDirectory'] })
+  if (selected.canceled) return getLabelImgConfig()
+  const directory = selected.filePaths[0]
+  if (!directoryExists(directory) || !fileExists(path.join(directory, 'labelImg.py'))) {
+    return getLabelImgConfig('The selected folder does not contain labelImg.py. Select the directory containing that file.')
   }
-  for (const scripts of [path.join(folder, 'Scripts'), path.join(folder, 'bin')]) {
-    for (const name of ['labelImg.exe', 'labelimg.exe', 'labelImg', 'labelimg', 'labelImg.py', 'labelimg.py']) {
-      const candidate = path.join(scripts, name)
-      if (fileExists(candidate)) possible.push({ path: candidate, kind: name.toLowerCase().endsWith('.py') ? 'script' : 'executable' })
-    }
-  }
-  for (const name of ['python.exe', 'python']) {
-    const candidate = path.join(folder, name)
-    const packageEntry = path.join(folder, 'Lib', 'site-packages', 'labelImg', 'labelImg.py')
-    if (fileExists(candidate) && fileExists(packageEntry)) possible.push({ path: candidate, kind: 'python' })
-  }
-  return possible
-}
-function saveLabelImgChoice(choice: { path: string; kind: 'executable' | 'script' | 'python'; pythonPath?: string }) {
-  writeLabelImgPreference(choice)
-  return getLabelImgConfig('LabelImg location saved.')
+  writeLabelImgPreference({ path: directory })
+  return getLabelImgConfig('LabelImg folder saved.')
 }
 function escapeXml(value: string) { return value.replace(/[<>&'\"]/g, character => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', "'": '&apos;', '\"': '&quot;' })[character]!) }
-
-function findExecutable(name: string): string {
-  const executable = process.platform === 'win32' ? `${name}.exe` : name
-  for (const directory of (process.env.PATH ?? '').split(path.delimiter)) {
-    const candidate = path.join(directory, executable)
-    try { if (fs.statSync(candidate).isFile()) return candidate } catch { /* Continue searching PATH. */ }
-  }
-  return ''
-}
 
 function registerVideoProtocol() { protocol.handle('bvmedia', async request => {
     const token = new URL(request.url).pathname.replace(/^\//, '')
@@ -139,6 +124,7 @@ function createWindow() {
 }
 
 function publishUpdateState(next: UpdateState) {
+  if (!isAllowedUpdateTransition(updateState.status, next.status)) return
   updateState = next
   mainWindow?.webContents.send('update:state', updateState)
 }
@@ -162,7 +148,7 @@ function setupApplicationUpdater() {
   autoUpdater.allowPrerelease = false
   publishUpdateState({ currentVersion: app.getVersion(), status: 'idle', configured: true, message: 'Ready to check the configured GitHub Releases feed.' })
   autoUpdater.on('checking-for-update', () => publishUpdateState({ currentVersion: app.getVersion(), status: 'checking', configured: true, message: 'Checking GitHub Releases…' }))
-  autoUpdater.on('update-available', info => publishUpdateState({ currentVersion: app.getVersion(), status: 'available', configured: true, availableVersion: info.version, message: `Version ${info.version} is available. Download when you are ready.` }))
+  autoUpdater.on('update-available', info => publishUpdateState({ currentVersion: app.getVersion(), status: 'available', configured: true, availableVersion: info.version, releaseNotes: releaseNotesText(info.releaseNotes), message: `Version ${info.version} is available. Download when you are ready.` }))
   autoUpdater.on('update-not-available', info => publishUpdateState({ currentVersion: app.getVersion(), status: 'up-to-date', configured: true, availableVersion: info.version, message: 'This installation is up to date.' }))
   autoUpdater.on('download-progress', progress => publishUpdateState({
     currentVersion: app.getVersion(), status: 'downloading', configured: true,
@@ -172,44 +158,65 @@ function setupApplicationUpdater() {
   autoUpdater.on('update-downloaded', info => publishUpdateState({ currentVersion: app.getVersion(), status: 'downloaded', configured: true, availableVersion: info.version, percent: 100, message: `Version ${info.version} is downloaded and ready to install.` }))
   autoUpdater.on('error', error => publishUpdateState({ currentVersion: app.getVersion(), status: 'error', configured: true, availableVersion: updateState.availableVersion, message: `Update check or download failed: ${error.message || 'network or release error'}` }))
   setTimeout(() => { void checkForApplicationUpdate() }, 3500)
+  setInterval(() => { void checkForApplicationUpdate() }, 6 * 60 * 60 * 1000)
 }
 
-async function checkForApplicationUpdate(): Promise<UpdateState> {
-  if (!updateState.configured) return updateState
-  if (['checking', 'downloading', 'downloaded'].includes(updateState.status)) return updateState
+function releaseNotesText(value: unknown): string | undefined {
+  const text = (typeof value === 'string' ? value : Array.isArray(value) ? value.map(item => item && typeof item === 'object' && 'note' in item ? (item as { note?: unknown }).note : '').filter(item => typeof item === 'string').join('\n') : '').trim()
+  return text ? text.slice(0, 12000) : undefined
+}
+
+function checkForApplicationUpdate(): Promise<UpdateState> {
+  if (applicationCheck) return applicationCheck
+  if (!updateState.configured) return Promise.resolve(updateState)
+  if (['checking', 'downloading', 'downloaded'].includes(updateState.status)) return Promise.resolve(updateState)
+  applicationCheck = (async () => {
   publishUpdateState({ currentVersion: app.getVersion(), status: 'checking', configured: true, message: 'Checking GitHub Releases…' })
   try {
     const result = await autoUpdater.checkForUpdates()
     if (result && updateState.status === 'checking') {
       const available = result.updateInfo.version !== app.getVersion()
       publishUpdateState({ currentVersion: app.getVersion(), status: available ? 'available' : 'up-to-date', configured: true,
-        availableVersion: result.updateInfo.version, message: available ? `Version ${result.updateInfo.version} is available.` : 'This installation is up to date.' })
+        availableVersion: result.updateInfo.version, releaseNotes: releaseNotesText(result.updateInfo.releaseNotes), message: available ? `Version ${result.updateInfo.version} is available.` : 'This installation is up to date.' })
     }
   } catch (error) {
     publishUpdateState({ currentVersion: app.getVersion(), status: 'error', configured: true,
       message: `Could not check GitHub Releases. Check your connection and try again. ${error instanceof Error ? error.message : ''}`.trim() })
   }
   return updateState
+  })().finally(() => { applicationCheck = null })
+  return applicationCheck
 }
 
 function sendStatus(value: string) { mainWindow?.webContents.send('backend:status', value) }
-function assertPythonAvailable() {
+function workerErrorMessage(message: string): string {
+  const missingModule = message.match(/No module named ['"]([^'"]+)['"]/i)?.[1]
+  if (!missingModule) return message
+  const guidance = app.isPackaged
+    ? 'The bundled inference worker is incomplete. Repair or reinstall Boundary Vision.'
+    : 'Install backend/requirements.txt into backend/.venv, then restart Boundary Vision.'
+  return `Python worker cannot import ${missingModule}. ${guidance}`
+}
+
+function assertWorkerAvailable(): { executable: string } {
   if (app.isPackaged) {
-    if (!fs.existsSync(workerExe)) throw new Error('The bundled Python inference runtime is missing. Repair or reinstall Boundary Vision.')
-    return
+    if (!fileExists(bundledWorkerExecutable)) throw new Error(`The bundled inference worker is missing: ${bundledWorkerExecutable}`)
+    return { executable: bundledWorkerExecutable }
   }
-  if (!fs.existsSync(pythonExe)) throw new Error(`Python environment not found at ${pythonExe}. Create backend/.venv and install backend/requirements.txt first.`)
-  if (!fs.existsSync(path.join(backendDir, 'app', 'worker.py'))) throw new Error('Python inference worker is missing from backend/app.')
+  const developmentPython = path.join(backendDir, process.platform === 'win32' ? '.venv\\Scripts\\python.exe' : '.venv/bin/python')
+  if (!fileExists(developmentPython)) throw new Error(`Development Python environment is missing: ${developmentPython}. Create backend/.venv and install backend/requirements.txt.`)
+  if (!fileExists(path.join(backendDir, 'worker_entry.py'))) throw new Error('Python inference worker is missing from backend/worker_entry.py.')
+  return { executable: developmentPython }
 }
 
 function runWorker(request: object, onProgress?: (value: unknown) => void): Promise<any> {
-  assertPythonAvailable()
+  const runtime = assertWorkerAvailable()
   if (activeWorker) throw new Error('Another inference task is already running.')
   return new Promise((resolve, reject) => {
-    const packaged = app.isPackaged
-    const command = packaged ? workerExe : pythonExe
-    const args = packaged ? [] : ['-u', '-m', 'app.worker']
-    const child = spawn(command, args, { cwd: packaged ? path.dirname(workerExe) : backendDir, windowsHide: true, detached: process.platform !== 'win32', env: { ...process.env, YOLO_AUTOINSTALL: 'false' }, stdio: ['pipe', 'pipe', 'pipe'] })
+    const runtimeDir = app.isPackaged ? bundledWorkerDir : backendDir
+    const command = runtime.executable
+    const args = app.isPackaged ? [] : ['-u', path.join(backendDir, 'worker_entry.py')]
+    const child = spawn(command, args, { cwd: runtimeDir, windowsHide: true, detached: process.platform !== 'win32', env: { ...process.env, YOLO_AUTOINSTALL: 'false' }, stdio: ['pipe', 'pipe', 'pipe'] })
     activeWorker = child
     cancellationRequested = false
     let stdout = ''
@@ -235,14 +242,14 @@ function runWorker(request: object, onProgress?: (value: unknown) => void): Prom
           const message = JSON.parse(line.slice('@@BOUNDARY_VISION@@'.length))
           if (message.event === 'progress' || message.event === 'video_progress') onProgress?.(message)
           if (message.event === 'capabilities' || message.event === 'complete' || message.event === 'model_validated') finish(undefined, message)
-          if (message.event === 'error') finish(new Error(message.message))
+          if (message.event === 'error') finish(new Error(workerErrorMessage(String(message.message ?? 'Python worker failed.'))))
         } catch { /* Ignore malformed worker protocol lines. */ }
       }
     })
     child.stderr.on('data', (buffer: Buffer) => { stderr = (stderr + buffer.toString('utf8')).slice(-8000) })
     child.on('error', error => finish(error))
     child.on('close', code => {
-      if (!settled) finish(new Error(cancellationRequested ? 'Processing cancelled. Finished outputs were kept.' : stderr.trim() || `Inference worker exited with code ${code}.`))
+      if (!settled) finish(new Error(cancellationRequested ? 'Processing cancelled. Finished outputs were kept.' : workerErrorMessage(stderr.trim() || `Inference worker exited with code ${code}.`)))
     })
     child.stdin.write(`${JSON.stringify(request)}\n`)
   })
@@ -272,8 +279,9 @@ function validateOptions(value: unknown): ProcessOptions {
   if (typeof o.confidence !== 'number' || !Number.isFinite(o.confidence) || o.confidence < 0.01 || o.confidence > 1) throw new Error('Confidence must be from 0.01 to 1.00.')
   if (typeof o.device !== 'string' || !['cpu', 'cuda:0'].includes(o.device)) throw new Error('Choose a supported processing device.')
   if (o.batchSize !== null && ![1, 2, 4].includes(o.batchSize as number)) throw new Error('Batch size must be Auto, 1, 2, or 4.')
-  if (typeof o.outputImage !== 'boolean' || !Array.isArray(o.formats) || !(o.formats as unknown[]).every(f => ['yolo', 'voc', 'createml'].includes(String(f)))) throw new Error('Invalid output settings.')
-  if (!o.outputImage && (o.formats as unknown[]).length === 0) throw new Error('Choose annotated images or at least one annotation format.')
+  const formats = validateAnnotationFormats(o.formats)
+  if (typeof o.outputImage !== 'boolean') throw new Error('Invalid output settings.')
+  if (!o.outputImage && formats.length === 0) throw new Error('Select an annotation format or enable annotated images.')
   return o as unknown as ProcessOptions
 }
 
@@ -310,65 +318,70 @@ ipcMain.handle('dialog:output-directory', async () => {
   return result.canceled ? null : result.filePaths[0]
 })
 ipcMain.handle('labelimg:config', () => getLabelImgConfig())
-ipcMain.handle('labelimg:choose', async (_event, mode: unknown) => {
-  if (!['file', 'folder', 'python'].includes(String(mode))) throw new Error('Choose a LabelImg executable, script, or Python environment.')
-  if (mode === 'folder') {
-    const selected = await dialog.showOpenDialog(mainWindow!, { title: 'Locate the LabelImg installation folder', properties: ['openDirectory'] })
-    if (selected.canceled) return getLabelImgConfig()
-    const candidates = candidatesInFolder(selected.filePaths[0])
-    if (!candidates.length) return getLabelImgConfig('No supported LabelImg launcher was found in that folder. Choose a launcher file or a Python environment containing LabelImg.')
-    let choice = candidates[0]
-    if (candidates.length > 1) {
-      const answer = await dialog.showMessageBox(mainWindow!, { type: 'question', title: 'Choose a LabelImg launcher', message: 'More than one supported launch option was found. Choose the one to configure.', buttons: [...candidates.map(item => `${item.kind}: ${path.relative(selected.filePaths[0], item.path)}`), 'Cancel'], cancelId: candidates.length })
-      if (answer.response >= candidates.length) return getLabelImgConfig()
-      choice = candidates[answer.response]
-    }
-    if (choice.kind === 'script') {
-      const python = await dialog.showOpenDialog(mainWindow!, { title: 'Choose the Python environment for LabelImg', properties: ['openFile'], filters: [{ name: 'Python', extensions: ['exe'] }] })
-      if (python.canceled) return getLabelImgConfig('LabelImg script selected; choose its Python environment to finish setup.')
-      return saveLabelImgChoice({ ...choice, pythonPath: python.filePaths[0] })
-    }
-    return saveLabelImgChoice(choice)
-  }
-  const selected = await dialog.showOpenDialog(mainWindow!, { title: mode === 'python' ? 'Choose the Python executable for a LabelImg environment' : 'Choose LabelImg executable or launch script', properties: ['openFile'], filters: mode === 'python'
-    ? [{ name: 'Python executable', extensions: ['exe'] }]
-    : [{ name: 'LabelImg launchers', extensions: ['exe', 'py'] }, { name: 'All files', extensions: ['*'] }] })
-  if (selected.canceled) return getLabelImgConfig()
-  const selectedPath = selected.filePaths[0]
-  if (!fileExists(selectedPath)) return getLabelImgConfig('The selected path is not a file.')
-  if (mode === 'python') return saveLabelImgChoice({ path: selectedPath, kind: 'python' })
-  if (path.extname(selectedPath).toLowerCase() === '.py') {
-    const python = await dialog.showOpenDialog(mainWindow!, { title: 'Choose the Python environment for LabelImg', properties: ['openFile'], filters: [{ name: 'Python', extensions: ['exe'] }] })
-    if (python.canceled) return getLabelImgConfig('LabelImg script selected; choose its Python environment to finish setup.')
-    return saveLabelImgChoice({ path: selectedPath, kind: 'script', pythonPath: python.filePaths[0] })
-  }
-  return saveLabelImgChoice({ path: selectedPath, kind: 'executable' })
-})
-function launchLabelImg(datasetDirectory?: string, classesPath?: string): Promise<void> {
-  const preference = readLabelImgPreference()
+ipcMain.handle('labelimg:choose-folder', () => chooseLabelImgFolder())
+function launchLabelImg(directory: string, args: string[] = []): Promise<void> {
   const config = getLabelImgConfig()
-  if (!config.available || !preference.path || !preference.kind) throw new Error(config.message)
-  const args = datasetDirectory ? [datasetDirectory, ...(classesPath ? [classesPath] : [])] : []
-  const executable = preference.kind === 'python' ? preference.path : preference.kind === 'script' ? preference.pythonPath! : preference.path
-  const launchArgs = preference.kind === 'python' ? ['-m', 'labelImg', ...args] : preference.kind === 'script' ? [preference.path, ...args] : args
+  if (!config.available) throw new Error(config.message)
+  const runtime = inspectLabelImgPython(directory)
+  if (!runtime.executable) throw new Error(runtime.error ?? 'Could not validate the LabelImg environment.')
+  const pythonExecutable = runtime.executable
   return new Promise((resolve, reject) => {
-    const child = spawn(executable, launchArgs, { cwd: datasetDirectory ?? path.dirname(preference.path!), windowsHide: true, detached: true, stdio: 'ignore', shell: false })
+    const child = spawn(pythonExecutable, ['labelImg.py', ...args], { cwd: directory, windowsHide: true, detached: true, stdio: ['ignore', 'pipe', 'pipe'], shell: false })
     let settled = false
     let startupTimer: NodeJS.Timeout | undefined
+    let processOutput = ''
+    const captureOutput = (chunk: Buffer | string) => {
+      processOutput = `${processOutput}${String(chunk)}`.slice(-4000)
+    }
+    child.stdout?.on('data', captureOutput)
+    child.stderr?.on('data', captureOutput)
     const finish = (error?: Error) => {
       if (settled) return
       settled = true
       if (startupTimer) clearTimeout(startupTimer)
-      if (error) reject(error)
-      else { child.unref(); resolve() }
+      if (error) {
+        child.stdout?.destroy()
+        child.stderr?.destroy()
+        reject(error)
+      } else {
+        child.stdout?.destroy()
+        child.stderr?.destroy()
+        child.unref()
+        resolve()
+      }
     }
-    child.once('error', error => finish(new Error(`Could not launch LabelImg: ${error.message}`)))
-    child.once('spawn', () => { startupTimer = setTimeout(() => finish(), 800) })
-    child.once('close', code => { if (!settled) finish(new Error(`LabelImg exited during startup${code === null ? '' : ` (code ${code})`}. Check its Python environment and dependencies.`)) })
+    child.once('error', error => {
+      const code = (error as NodeJS.ErrnoException).code
+      finish(new Error(code === 'ENOENT'
+        ? 'The dedicated LabelImg interpreter is missing or could not be started. Recreate the .venv under the configured LabelImg folder and install PyQt5 and lxml.'
+        : `Could not launch LabelImg: ${error.message}`))
+    })
+    child.once('spawn', () => { startupTimer = setTimeout(() => finish(), 5000) })
+    child.once('close', (code, signal) => {
+      if (settled) return
+      const output = processOutput.trim()
+      const missingDependency = output.match(/No module named ['"]?(PyQt5|lxml)/i)
+      if (missingDependency) {
+        finish(new Error(`LabelImg cannot import ${missingDependency[1]}. Install PyQt5 and lxml in the dedicated .venv under the configured LabelImg folder, then retry.`))
+        return
+      }
+      const pythonMissing = /no (?:installed |suitable )?pythons?|python(?: runtime| installation)?.*(?:not found|not installed)|requested python version.*not installed|unable to create process using/i.test(output)
+      const summary = output.split(/\r?\n/)
+        .filter(line => !/^\s*(?:Traceback \(|File ".*", line \d+|During handling of the above exception)/.test(line))
+        .slice(-4).join(' · ')
+      const details = summary || (code === null ? `terminated by ${signal ?? 'an unknown signal'}` : `exit code ${code}`)
+      finish(new Error(pythonMissing
+        ? `Could not start the dedicated LabelImg Python environment: ${details}. Recreate the .venv under the configured LabelImg folder and install PyQt5 and lxml.`
+        : `LabelImg failed to start: ${details}`))
+    })
   })
 }
-ipcMain.handle('labelimg:test', async () => {
-  try { await launchLabelImg(); return getLabelImgConfig('LabelImg launch process started successfully.') }
+ipcMain.handle('labelimg:launch', async () => {
+  let config = getLabelImgConfig()
+  const scriptExists = !!config.path && directoryExists(config.path) && fileExists(path.join(config.path, 'labelImg.py'))
+  if (!scriptExists) config = await chooseLabelImgFolder()
+  if (!config.available || !config.path) return config
+  try { await launchLabelImg(config.path); return getLabelImgConfig('LabelImg started.') }
   catch (error) { return getLabelImgConfig(error instanceof Error ? error.message : 'Could not launch LabelImg.') }
 })
 ipcMain.handle('labelimg:open', async (_event, values: unknown, format: unknown, initialDirectory: unknown) => {
@@ -381,28 +394,16 @@ ipcMain.handle('labelimg:open', async (_event, values: unknown, format: unknown,
     if (!Number.isSafeInteger(candidate.width) || candidate.width < 1 || !Number.isSafeInteger(candidate.height) || candidate.height < 1 || !Array.isArray(candidate.detections)) throw new Error('Image result metadata is invalid.')
     return known
   })
-  let preference = readLabelImgPreference()
-  if (!getLabelImgConfig().available) {
+  let config = getLabelImgConfig()
+  if (!config.available) {
+    if (config.path && directoryExists(config.path) && fileExists(path.join(config.path, 'labelImg.py'))) throw new Error(config.message)
     const configure = await dialog.showMessageBox(mainWindow!, { type: 'info', title: 'Set up LabelImg', message: 'LabelImg is not configured. Locate the application now?', buttons: ['Locate LabelImg', 'Cancel'], cancelId: 1 })
     if (configure.response !== 0) return null
-    const located = await dialog.showOpenDialog(mainWindow!, { title: 'Locate LabelImg', properties: ['openFile'], filters: [{ name: 'LabelImg launchers', extensions: ['exe', 'py'] }, { name: 'All files', extensions: ['*'] }] })
-    if (located.canceled) return null
-    const launcher = located.filePaths[0]
-    if (!fileExists(launcher)) throw new Error('The selected LabelImg path is not a file.')
-    if (path.extname(launcher).toLowerCase() === '.py') {
-      const python = await dialog.showOpenDialog(mainWindow!, { title: 'Choose the Python environment for LabelImg', properties: ['openFile'], filters: [{ name: 'Python', extensions: ['exe'] }] })
-      if (python.canceled) return null
-      preference = { path: launcher, kind: 'script', pythonPath: python.filePaths[0] }
-    } else preference = { path: launcher, kind: 'executable' }
-    writeLabelImgPreference(preference)
+    config = await chooseLabelImgFolder()
   }
-  const configured = getLabelImgConfig()
-  if (!configured.available || !preference.path) throw new Error(configured.message)
+  if (!config.available || !config.path) throw new Error(config.message)
   const selectedFormat = String(format) as 'yolo' | 'voc'
-  const initial = typeof initialDirectory === 'string' && path.isAbsolute(initialDirectory) && fs.existsSync(initialDirectory) && fs.statSync(initialDirectory).isDirectory() ? initialDirectory : app.getPath('pictures')
-  const selected = await dialog.showOpenDialog(mainWindow!, { title: 'Choose a parent folder for a LabelImg dataset', defaultPath: initial, properties: ['openDirectory', 'createDirectory'] })
-  if (selected.canceled) return null
-  const parent = selected.filePaths[0]
+  const parent = typeof initialDirectory === 'string' && path.isAbsolute(initialDirectory) && fs.existsSync(initialDirectory) && fs.statSync(initialDirectory).isDirectory() ? initialDirectory : app.getPath('pictures')
   let datasetDirectory = path.join(parent, 'boundary-vision-labelimg')
   let suffix = 1
   while (fs.existsSync(datasetDirectory)) datasetDirectory = path.join(parent, `boundary-vision-labelimg-${suffix++}`)
@@ -450,7 +451,7 @@ ipcMain.handle('labelimg:open', async (_event, values: unknown, format: unknown,
   }
   const classesPath = path.join(datasetDirectory, 'classes.txt')
   await fs.promises.writeFile(classesPath, names.join('\n') + '\n', { flag: 'wx' })
-  await launchLabelImg(datasetDirectory, selectedFormat === 'yolo' ? classesPath : undefined)
+  await launchLabelImg(config.path, [datasetDirectory, ...(selectedFormat === 'yolo' ? [classesPath] : [])])
   return datasetDirectory
   } catch (error) {
     await fs.promises.rm(datasetDirectory, { recursive: true, force: true }).catch(() => undefined)
@@ -474,7 +475,6 @@ ipcMain.handle('result:video-url', async (_event, value: unknown) => {
 ipcMain.handle('backend:capabilities', async () => {
   sendStatus('Checking Python runtime and available devices…')
   const capabilities = await runWorker({ action: 'capabilities' })
-  if (typeof capabilities.pythonVersion === 'string') modelManager.setPythonVersion(capabilities.pythonVersion)
   return capabilities
 })
 ipcMain.handle('backend:process-images', async (_event, payload: unknown) => {
@@ -529,8 +529,22 @@ ipcMain.handle('backend:process-video', async (_event, payload: unknown) => {
   if (typeof options.device !== 'string' || !['cpu', 'cuda:0'].includes(options.device)) throw new Error('Choose a supported processing device.')
   if (typeof options.inferenceFps !== 'number' || !Number.isFinite(options.inferenceFps) || options.inferenceFps < 0.1 || options.inferenceFps > 120) throw new Error('Inference FPS must be from 0.1 to 120.')
   if (typeof options.outputFps !== 'number' || !Number.isFinite(options.outputFps) || options.outputFps < 1 || options.outputFps > 60) throw new Error('Output FPS must be from 1 to 60.')
-  if (!Array.isArray(options.formats) || !(options.formats as unknown[]).every(format => ['yolo', 'voc', 'createml'].includes(String(format)))) throw new Error('Invalid frame annotation settings.')
-  if (!ffmpegPath || !ffprobePath || !fs.existsSync(ffmpegPath) || !fs.existsSync(ffprobePath)) throw new Error('FFmpeg and FFprobe are required. Install a matching FFmpeg build with both executables available on PATH.')
+  const formats = validateAnnotationFormats(options.formats)
+  sendStatus('Checking FFmpeg and FFprobe tools…')
+  const tools: ManagedFfmpegTools = await ensureManagedFfmpegTools(app.getPath('userData'), async (setupError, retry) => {
+    const result = await dialog.showMessageBox(mainWindow!, {
+      type: retry ? 'error' : 'question',
+      title: retry ? 'FFmpeg setup failed' : 'Set up video tools',
+      message: retry
+        ? 'Boundary Vision could not download and prepare FFmpeg and FFprobe.'
+        : 'Video processing needs FFmpeg and FFprobe. Download and set up these tools now?',
+      detail: setupError?.message ?? 'The verified FFmpeg Essentials build will be stored in Boundary Vision user data and reused for future video jobs.',
+      buttons: retry ? ['Retry', 'Cancel'] : ['Download tools', 'Cancel'],
+      defaultId: 0,
+      cancelId: 1,
+    })
+    return result.response === 0
+  })
   const selected = await modelManager.getSelectedModel()
   if (!selected || options.modelId !== selected.id || options.modelVersion !== selected.version) throw new Error('Select an installed model version in Model Manager before processing video.')
   modelManager.beginInference(selected.id, selected.version)
@@ -541,8 +555,8 @@ ipcMain.handle('backend:process-video', async (_event, payload: unknown) => {
       action: 'process_video', filePath, outputDir: path.resolve(p.outputDir),
       modelId: model.id, modelPath: model.path, modelClasses: model.classes,
       modelSha256: model.sha256, modelSizeBytes: model.sizeBytes,
-      ffmpegPath, ffprobePath, confidence: options.confidence, device: options.device,
-      inferenceFps: options.inferenceFps, outputFps: options.outputFps, formats: options.formats,
+      ffmpegPath: tools.ffmpegPath, ffprobePath: tools.ffprobePath, confidence: options.confidence, device: options.device,
+      inferenceFps: options.inferenceFps, outputFps: options.outputFps, formats,
     }, update => {
       const progress = update as { event?: string; currentTime?: number; duration?: number; percent?: number; decodedFrames?: number; inferredFrames?: number; outputFrames?: number }
       if (progress.event === 'video_progress') mainWindow?.webContents.send('backend:video-progress', progress)
@@ -555,28 +569,33 @@ ipcMain.handle('backend:process-video', async (_event, payload: unknown) => {
     modelManager.setActiveInferenceModel(null)
   }
 })
-ipcMain.handle('backend:cancel', async () => { if (activeWorker) { requestWorkerCancellation(); sendStatus('Cancelling and cleaning up temporary video files…') } })
+ipcMain.handle('backend:cancel', async () => {
+  if (cancelManagedFfmpegSetup()) { sendStatus('Cancelling FFmpeg setup and removing incomplete download data…'); return }
+  if (activeWorker) { requestWorkerCancellation(); sendStatus('Cancelling and cleaning up temporary video files…') }
+})
 ipcMain.handle('model:list', async () => await modelManager.list())
+ipcMain.handle('model:refresh', async () => await modelManager.refreshRegistry())
 ipcMain.handle('model:select', async (_event, modelId: unknown, version: unknown) => {
   if (updateInstallationRequested) throw new Error('The application is preparing to install an update. Try again after it restarts.')
-  if (typeof modelId !== 'string' || typeof version !== 'string') throw new Error('Invalid model ID or version.')
-  await modelManager.select(modelId, version)
+  const request = validateModelVersionRequest(modelId, version)
+  await modelManager.select(request.modelId, request.version)
   return await modelManager.list()
 })
 ipcMain.handle('model:install', async (_event, modelId: unknown, version: unknown) => {
   if (updateInstallationRequested) throw new Error('The application is preparing to install an update. Try again after it restarts.')
-  if (typeof modelId !== 'string' || typeof version !== 'string') throw new Error('Invalid model ID or version.')
-  await modelManager.install(modelId, version, progress => mainWindow?.webContents.send('model:install-progress', progress))
+  const request = validateModelVersionRequest(modelId, version)
+  await modelManager.install(request.modelId, request.version, progress => mainWindow?.webContents.send('model:install-progress', progress))
   return await modelManager.list()
 })
 ipcMain.handle('model:remove', async (_event, modelId: unknown, version: unknown) => {
   if (updateInstallationRequested) throw new Error('The application is preparing to install an update. Try again after it restarts.')
-  if (typeof modelId !== 'string' || typeof version !== 'string') throw new Error('Invalid model ID or version.')
-  await modelManager.remove(modelId, version)
+  const request = validateModelVersionRequest(modelId, version)
+  await modelManager.remove(request.modelId, request.version)
   return await modelManager.list()
 })
 ipcMain.handle('model:cancel-install', async (_event, modelId: unknown, version: unknown) => {
-  if (typeof modelId === 'string' && typeof version === 'string') modelManager.cancelInstall(modelId, version)
+  const request = validateModelVersionRequest(modelId, version)
+  modelManager.cancelInstall(request.modelId, request.version)
 })
 
 ipcMain.handle('update:state', () => updateState)

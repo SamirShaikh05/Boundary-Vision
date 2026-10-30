@@ -31,15 +31,15 @@ export type ProgressUpdate = { completed: number; total: number; current: string
 export type ModelCard = {
   id: ModelId; name: string; description: string; latestVersion: string; classes: string[]
   selected: boolean; selectedVersion: string | null
-  status: ModelVersionCard['status']; source: ModelVersionCard['source']; detail: string; runtimeCompatible: boolean
+  status: ModelVersionCard['status']; source: ModelVersionCard['source']; detail: string; formatSupported: boolean; updateAvailable: boolean
   versions: ModelVersionCard[]
 }
 export type ModelVersionCard = {
   version: string; format: string; classes?: string[]; changeSummary?: string; checkpointFilename: string; expectedSizeBytes: number; sha256: string
-  downloadUrl: string | null; developmentSource: string | null; minimumPython?: string
+  downloadUrl: string | null; developmentSource: string | null
   status: 'installed' | 'available' | 'not-configured' | 'corrupt'
   source: 'managed' | 'development' | 'remote' | 'none'
-  canInstall: boolean; canRemove: boolean; detail: string; runtimeCompatible: boolean
+  canInstall: boolean; canRemove: boolean; detail: string; formatSupported: boolean
 }
 export type ModelCatalog = { models: ModelCard[]; selectedId: ModelId | null; selectedVersion: string | null; storagePath: string }
 export type ModelInstallProgress = {
@@ -53,9 +53,10 @@ export type UpdateState = {
   percent?: number
   transferred?: number
   total?: number
+  releaseNotes?: string
   message?: string
 }
-export type LabelImgConfig = { path: string | null; kind: 'executable' | 'script' | 'python' | null; pythonPath: string | null; available: boolean; message: string }
+export type LabelImgConfig = { path: string | null; available: boolean; message: string }
 export type LabelImgResult = Pick<ImageResult, 'source_path' | 'width' | 'height' | 'detections'>
 
 declare global {
@@ -63,6 +64,7 @@ declare global {
     boundaryVision: {
       getCapabilities: () => Promise<{ devices: DeviceOption[]; pythonVersion: string }>
       getModelCatalog: () => Promise<ModelCatalog>
+      refreshModelCatalog: () => Promise<ModelCatalog>
       selectModel: (modelId: ModelId, version: string) => Promise<ModelCatalog>
       installModel: (modelId: ModelId, version: string) => Promise<ModelCatalog>
       removeModel: (modelId: ModelId, version: string) => Promise<ModelCatalog>
@@ -72,8 +74,8 @@ declare global {
       downloadAppUpdate: () => Promise<UpdateState>
       installAppUpdate: () => Promise<void>
       getLabelImgConfig: () => Promise<LabelImgConfig>
-      chooseLabelImg: (mode: 'file' | 'folder' | 'python') => Promise<LabelImgConfig>
-      testLabelImg: () => Promise<LabelImgConfig>
+      chooseLabelImgFolder: () => Promise<LabelImgConfig>
+      launchLabelImg: () => Promise<LabelImgConfig>
       openLabelImg: (results: LabelImgResult[], format: 'yolo' | 'voc', initialDirectory: string | null) => Promise<string | null>
       chooseImages: () => Promise<string[]>
       chooseVideo: () => Promise<string | null>

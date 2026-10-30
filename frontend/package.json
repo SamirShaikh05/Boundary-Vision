@@ -12,6 +12,9 @@
   "scripts": {
     "dev": "concurrently -k \"vite\" \"wait-on http://localhost:5173 && tsc -p tsconfig.electron.json && electron .\"",
     "build": "tsc -p tsconfig.json && tsc -p tsconfig.electron.json && vite build",
+    "test:workflow": "node --experimental-strip-types --test tests/workflow.test.mjs",
+    "test:updates": "node --experimental-strip-types --test tests/updates.test.mjs",
+    "test:staging": "node --test tests/model-staging.test.mjs",
     "preview": "vite preview",
     "package:win": "npm run build && powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package-windows.ps1",
     "release:win": "npm run build && powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package-windows.ps1 -Publish"
@@ -52,12 +55,8 @@
         "to": "backend/boundary-worker"
       },
       {
-        "from": "build-resources/ffmpeg",
-        "to": "ffmpeg"
-      },
-      {
-        "from": "build-resources/models",
-        "to": "models"
+        "from": "build-resources/models/registry.json",
+        "to": "models/registry.json"
       }
     ],
     "win": {
@@ -76,11 +75,13 @@
       "allowToChangeInstallationDirectory": true,
       "perMachine": false,
       "createDesktopShortcut": true,
-      "createStartMenuShortcut": true
+      "createStartMenuShortcut": true,
+      "differentialPackage": true
     },
     "artifactName": "Boundary-Vision-Setup-${version}-${arch}.${ext}"
   },
   "dependencies": {
-    "electron-updater": "^6.8.11"
+    "electron-updater": "^6.8.11",
+    "unzipper": "^0.12.5"
   }
 }

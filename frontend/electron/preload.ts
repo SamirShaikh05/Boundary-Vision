@@ -4,6 +4,7 @@ import type { ModelInstallProgress, ModelId, ProcessOptions, ProgressUpdate, Upd
 contextBridge.exposeInMainWorld('boundaryVision', {
   getCapabilities: () => ipcRenderer.invoke('backend:capabilities'),
   getModelCatalog: () => ipcRenderer.invoke('model:list'),
+  refreshModelCatalog: () => ipcRenderer.invoke('model:refresh'),
   selectModel: (modelId: ModelId, version: string) => ipcRenderer.invoke('model:select', modelId, version),
   installModel: (modelId: ModelId, version: string) => ipcRenderer.invoke('model:install', modelId, version),
   removeModel: (modelId: ModelId, version: string) => ipcRenderer.invoke('model:remove', modelId, version),
@@ -13,8 +14,8 @@ contextBridge.exposeInMainWorld('boundaryVision', {
   downloadAppUpdate: () => ipcRenderer.invoke('update:download'),
   installAppUpdate: () => ipcRenderer.invoke('update:install'),
   getLabelImgConfig: () => ipcRenderer.invoke('labelimg:config'),
-  chooseLabelImg: (mode: 'file' | 'folder' | 'python') => ipcRenderer.invoke('labelimg:choose', mode),
-  testLabelImg: () => ipcRenderer.invoke('labelimg:test'),
+  chooseLabelImgFolder: () => ipcRenderer.invoke('labelimg:choose-folder'),
+  launchLabelImg: () => ipcRenderer.invoke('labelimg:launch'),
   openLabelImg: (results: unknown[], format: 'yolo' | 'voc', initialDirectory: string | null) => ipcRenderer.invoke('labelimg:open', results, format, initialDirectory),
   chooseImages: () => ipcRenderer.invoke('dialog:images'),
   chooseVideo: () => ipcRenderer.invoke('dialog:video'),

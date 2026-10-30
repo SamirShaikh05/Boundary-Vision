@@ -8,6 +8,16 @@ from pathlib import Path
 
 from .schemas import Detection
 
+ANNOTATION_EXTENSIONS = {"yolo": ".txt", "voc": ".xml", "createml": ".json"}
+
+
+def annotation_filename(stem: str, format_name: str) -> str:
+    try:
+        extension = ANNOTATION_EXTENSIONS[format_name]
+    except KeyError as exc:
+        raise ValueError(f"Unsupported annotation format: {format_name}") from exc
+    return f"{stem}{extension}"
+
 
 def _atomic_bytes(path: Path, contents: bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -30,6 +40,10 @@ def write_yolo(path: Path, detections: list[Detection], width: int, height: int)
         box_height = (item.y2 - item.y1) / height
         lines.append(f"{item.class_id} {center_x:.6f} {center_y:.6f} {box_width:.6f} {box_height:.6f}")
     _atomic_bytes(path, ("\n".join(lines) + ("\n" if lines else "")).encode("utf-8"))
+
+
+def write_classes_txt(path: Path, class_names: list[str]) -> None:
+    _atomic_bytes(path, ("\n".join(class_names) + ("\n" if class_names else "")).encode("utf-8"))
 
 
 def write_voc(path: Path, image_path: Path, detections: list[Detection], width: int, height: int) -> None:
