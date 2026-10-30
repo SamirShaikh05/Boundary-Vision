@@ -5,33 +5,13 @@ $ErrorActionPreference = 'Stop'
 $frontendDir = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $projectDir = (Resolve-Path (Join-Path $frontendDir '..')).Path
 $python = Join-Path $projectDir 'backend\.venv\Scripts\python.exe'
-$ffmpegCommand = Get-Command ffmpeg -ErrorAction SilentlyContinue
-$ffprobeCommand = Get-Command ffprobe -ErrorAction SilentlyContinue
 $buildDir = Join-Path $frontendDir 'build-resources'
-$ffmpegDir = Join-Path $buildDir 'ffmpeg'
 $modelsDir = Join-Path $buildDir 'models'
 $backendDist = Join-Path $projectDir 'backend\dist\boundary-worker'
 $workDir = Join-Path $projectDir 'runtime\build\pyinstaller-work'
 $specDir = Join-Path $projectDir 'runtime\build\pyinstaller-spec'
-
-function Get-ExecutableOutput([string]$Executable, [string[]]$Arguments) {
-  $startInfo = [System.Diagnostics.ProcessStartInfo]::new()
-  $startInfo.FileName = $Executable
-  $startInfo.Arguments = $Arguments -join ' '
-  $startInfo.UseShellExecute = $false
-  $startInfo.CreateNoWindow = $true
-  $startInfo.RedirectStandardOutput = $true
-  $startInfo.RedirectStandardError = $true
-  $process = [System.Diagnostics.Process]::new()
-  $process.StartInfo = $startInfo
-  if (-not $process.Start()) { throw "Could not start executable: $Executable" }
-  $stdout = $process.StandardOutput.ReadToEndAsync()
-  $stderr = $process.StandardError.ReadToEndAsync()
-  $process.WaitForExit()
-  $result = $stdout.GetAwaiter().GetResult() + $stderr.GetAwaiter().GetResult()
-  if ($process.ExitCode -ne 0) { throw "$Executable $($Arguments -join ' ') exited with code $($process.ExitCode). $result" }
-  return $result
-}
+. (Join-Path $PSScriptRoot 'model-staging.ps1')
+$modelsDir = Reset-ModelStagingDirectory -ProjectDir $projectDir
 
 $githubOwner = $env:BOUNDARY_VISION_GITHUB_OWNER
 $githubRepo = $env:BOUNDARY_VISION_GITHUB_REPO
@@ -40,9 +20,6 @@ if ($Publish) {
   if (-not $githubOwner -or -not $githubRepo) { throw 'A GitHub owner and repository are required to publish a release.' }
   if (-not $env:GH_TOKEN) { throw 'GH_TOKEN is required to upload release assets. Do not put it in source files.' }
   if (-not ($env:CSC_LINK -or $env:WIN_CSC_LINK)) { throw 'A Windows code-signing certificate is required for release publishing (set CSC_LINK or WIN_CSC_LINK securely).' }
-  if (-not $env:BOUNDARY_VISION_FFMPEG_SOURCE_ARCHIVE -or -not (Test-Path -LiteralPath $env:BOUNDARY_VISION_FFMPEG_SOURCE_ARCHIVE -PathType Leaf)) {
-    throw 'Publishing is blocked until BOUNDARY_VISION_FFMPEG_SOURCE_ARCHIVE points to the reviewed corresponding-source and third-party source bundle for the bundled GPL FFmpeg build.'
-  }
 }
 
 if (-not (Test-Path -LiteralPath $python -PathType Leaf)) {
@@ -51,37 +28,6 @@ if (-not (Test-Path -LiteralPath $python -PathType Leaf)) {
 $expectedPython = (Get-Content -LiteralPath (Join-Path $projectDir '.python-version') -Raw).Trim()
 $actualPython = (& $python -c 'import platform; print(platform.python_version())').Trim()
 if ($actualPython -ne $expectedPython) { throw "Build Python version mismatch: expected $expectedPython from .python-version, found $actualPython." }
-if (-not $ffmpegCommand -or -not $ffprobeCommand) { throw 'A matching FFmpeg and FFprobe build must be installed and available on PATH before packaging.' }
-$ffmpeg = $ffmpegCommand.Source
-$ffprobe = $ffprobeCommand.Source
-$ffmpegRoot = Split-Path (Split-Path $ffmpeg)
-if ((Split-Path $ffmpeg) -ne (Split-Path $ffprobe)) { throw 'FFmpeg and FFprobe must come from the same bin directory.' }
-$ffmpegBanner = Get-ExecutableOutput $ffmpeg @('-version')
-$ffprobeBanner = Get-ExecutableOutput $ffprobe @('-version')
-$ffmpegVersion = (($ffmpegBanner -split '\r?\n' | Select-Object -First 1) -replace '^ffmpeg version\s+', '' -replace '[^0-9.].*$', '')
-$ffprobeVersion = (($ffprobeBanner -split '\r?\n' | Select-Object -First 1) -replace '^ffprobe version\s+', '' -replace '[^0-9.].*$', '')
-if (-not $ffmpegVersion -or $ffmpegVersion -ne $ffprobeVersion) { throw "FFmpeg/FFprobe versions do not match ($ffmpegVersion and $ffprobeVersion)." }
-$ffmpegDetails = Get-ExecutableOutput $ffmpeg @('-version')
-$ffmpegLicense = Get-ExecutableOutput $ffmpeg @('-L')
-if ($ffmpegDetails -notmatch '^ffmpeg version 9\.0\.2-full_build-www\.gyan\.dev' -or
-    $ffmpegDetails -notmatch '--enable-gpl(?:\s|$)' -or
-    $ffmpegDetails -notmatch '--enable-version3(?:\s|$)' -or
-    $ffmpegDetails -match '--enable-nonfree(?:\s|$)' -or
-    $ffmpegLicense -notmatch 'GNU General Public License[\s\S]*?either version 3') {
-  throw 'The FFmpeg binary does not match the reviewed Gyan 9.0.2 GPLv3 build profile. Review docs/WINDOWS_RELEASE.md and update the release license/provenance review before changing this guard.'
-}
-$ffmpegEncoders = Get-ExecutableOutput $ffmpeg @('-encoders')
-if ($ffmpegEncoders -notmatch '\blibx264\b') { throw 'The selected FFmpeg build does not provide the libx264 encoder required by video export.' }
-$ffmpegRoot = Split-Path (Split-Path $ffmpeg)
-$ffmpegReadme = Join-Path $ffmpegRoot 'README.txt'
-$ffmpegReadmeText = if (Test-Path -LiteralPath $ffmpegReadme -PathType Leaf) { Get-Content -LiteralPath $ffmpegReadme -Raw } else { '' }
-if ($ffmpegReadmeText -notmatch '9\.0\.2-full_build-www\.gyan\.dev' -or
-    $ffmpegReadmeText -notmatch 'GPL v3' -or
-    $ffmpegReadmeText -notmatch '946fcce07b' -or
-    $ffmpegReadmeText -notmatch 'libx264') {
-  throw "The selected FFmpeg build's README/provenance does not match the reviewed binary: $ffmpegReadme"
-}
-
 & $python -m pip install --upgrade -r (Join-Path $projectDir 'backend\requirements-release.txt')
 if ($LASTEXITCODE -ne 0) { throw 'Could not install the locked Python release requirements.' }
 
@@ -97,20 +43,9 @@ $env:YOLO_AUTOINSTALL = 'false'
 if ($LASTEXITCODE -ne 0) { throw 'PyInstaller could not build the standalone Python worker.' }
 if ($null -eq $previousYoloAutoinstall) { Remove-Item Env:YOLO_AUTOINSTALL -ErrorAction SilentlyContinue }
 else { $env:YOLO_AUTOINSTALL = $previousYoloAutoinstall }
-
-New-Item -ItemType Directory -Force -Path $ffmpegDir, $modelsDir | Out-Null
-Copy-Item -LiteralPath $ffmpeg -Destination (Join-Path $ffmpegDir 'ffmpeg.exe') -Force
-Copy-Item -LiteralPath $ffprobe -Destination (Join-Path $ffmpegDir 'ffprobe.exe') -Force
-$licenseFile = Join-Path (Split-Path (Split-Path $ffmpeg)) 'LICENSE'
-if (Test-Path -LiteralPath $licenseFile -PathType Leaf) {
-  Copy-Item -LiteralPath $licenseFile -Destination (Join-Path $ffmpegDir 'LICENSE.txt') -Force
+if (-not (Test-Path -LiteralPath (Join-Path $backendDist 'boundary-worker.exe') -PathType Leaf)) {
+  throw "PyInstaller output is missing the expected worker: $(Join-Path $backendDist 'boundary-worker.exe')"
 }
-else { throw "FFmpeg license file is missing from build root: $licenseFile" }
-$ffmpegReadme = Join-Path $ffmpegRoot 'README.txt'
-if (Test-Path -LiteralPath $ffmpegReadme -PathType Leaf) {
-  Copy-Item -LiteralPath $ffmpegReadme -Destination (Join-Path $ffmpegDir 'UPSTREAM-README.txt') -Force
-}
-else { throw "FFmpeg build provenance file is missing from build root: $ffmpegReadme" }
 
 $registryPath = Join-Path $projectDir 'models\registry.json'
 $registry = Get-Content -LiteralPath $registryPath -Raw -Encoding utf8 | ConvertFrom-Json
@@ -134,12 +69,16 @@ foreach ($model in $registry.models) {
     if ($version.classes -and ($version.classes.Count -lt 1 -or @($version.classes | Select-Object -Unique).Count -ne $version.classes.Count)) { throw "Model version class list is invalid: $($model.id) $($version.version)" }
     if ($version.developmentSource) {
       $checkpoint = Join-Path (Join-Path $projectDir 'models') $version.developmentSource
-      if (-not (Test-Path -LiteralPath $checkpoint -PathType Leaf)) { throw "Model checkpoint missing: $checkpoint" }
-      $checkpointInfo = Get-Item -LiteralPath $checkpoint
-      $checkpointHash = (Get-FileHash -LiteralPath $checkpoint -Algorithm SHA256).Hash.ToLowerInvariant()
-      if ($checkpointInfo.Length -ne $version.expectedSizeBytes -or $checkpointHash -ne $version.sha256) { throw "Registry size/hash does not match original checkpoint: $($model.id) $($version.version)" }
+      if (Test-Path -LiteralPath $checkpoint -PathType Leaf) {
+        $checkpointInfo = Get-Item -LiteralPath $checkpoint
+        $checkpointHash = (Get-FileHash -LiteralPath $checkpoint -Algorithm SHA256).Hash.ToLowerInvariant()
+        if ($checkpointInfo.Length -ne $version.expectedSizeBytes -or $checkpointHash -ne $version.sha256) { throw "Registry size/hash does not match local checkpoint: $($model.id) $($version.version)" }
+      } else {
+        Write-Host "Optional development checkpoint not present; packaging the registry without model weights: $checkpoint"
+      }
     }
     $version.developmentSource = $null
+    $version.PSObject.Properties.Remove('minimumPython')
     if ($modelBaseUrl) {
       $version.downloadUrl = "$modelBaseUrl/models/$([Uri]::EscapeDataString($model.id))/$([Uri]::EscapeDataString($version.version))/$([Uri]::EscapeDataString($version.checkpointFilename))"
     } elseif ($version.downloadUrl) {
@@ -150,6 +89,7 @@ foreach ($model in $registry.models) {
 }
 $registryJson = $registry | ConvertTo-Json -Depth 20
 [System.IO.File]::WriteAllText((Join-Path $modelsDir 'registry.json'), $registryJson, [System.Text.UTF8Encoding]::new($false))
+Assert-ModelStagingDirectory -ModelsPath $modelsDir
 
 Push-Location $frontendDir
 try {
