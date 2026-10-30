@@ -31,6 +31,10 @@ runtime/build/
 frontend/release/
 frontend/build-resources/
 
+# Large model weights are distributed through the models-v1 GitHub Release
+/models/cricket_yolo26n_best.pt
+/models/cricket_yolo26l_best.pt
+
 # Runtime temporary files and logs
 runtime/temp/*
 !runtime/temp/.gitkeep
