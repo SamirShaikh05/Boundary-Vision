@@ -1,0 +1,37 @@
+name: Feature request
+description: Suggest an improvement to Boundary Vision.
+title: "[Feature]: "
+labels:
+  - enhancement
+body:
+  - type: markdown
+    attributes:
+      value: "Please search existing issues first and describe the user need the feature would address."
+  - type: textarea
+    id: feature
+    attributes:
+      label: Feature description
+      description: What would you like Boundary Vision to do?
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem it solves
+      description: What user problem or workflow limitation does this address?
+    validations:
+      required: true
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed solution
+      description: Describe how you imagine the feature working. Alternatives are welcome.
+    validations:
+      required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Add examples, screenshots, related issues, or other useful context.
+    validations:
+      required: false
