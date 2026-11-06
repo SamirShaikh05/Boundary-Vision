@@ -10,7 +10,7 @@
         "Ball",
         "Stump"
       ],
-      "latestVersion": "baseline-50-epoch",
+      "latestVersion": "finetuned-v2",
       "versions": [
         {
           "version": "baseline-50-epoch",
@@ -19,6 +19,15 @@
           "sha256": "34b16af862199dcf11165e37fd5907ab9bfcd6b29d8e094547851c5265e4c450",
           "downloadUrl": "https://github.com/SamirShaikh05/Boundary-Vision/releases/download/models-v1/cricket_yolo26n_best.pt",
           "developmentSource": "cricket_yolo26n_best.pt",
+          "format": "ultralytics-yolo"
+        },
+        {
+          "version": "finetuned-v2",
+          "checkpointFilename": "cricket_yolo26n_finetuned_v2.pt",
+          "expectedSizeBytes": 5429765,
+          "sha256": "fc7bca7f39ff75f1b69ad276f5eb8035a5846c5a3389f7efcd28a619c9899e21",
+          "downloadUrl": "https://github.com/SamirShaikh05/Boundary-Vision/releases/download/models-v2/cricket_yolo26n_finetuned_v2.pt",
+          "developmentSource": "cricket_yolo26n_finetuned_v2.pt",
           "format": "ultralytics-yolo"
         }
       ]
@@ -32,7 +41,7 @@
         "Ball",
         "Stump"
       ],
-      "latestVersion": "baseline-50-epoch",
+      "latestVersion": "highres-refined-v2",
       "versions": [
         {
           "version": "baseline-50-epoch",
@@ -41,6 +50,15 @@
           "sha256": "3c0844e8221b33f30665e7f1c33cccad419301ec5d2de774d66c7bfb3e3f5932",
           "downloadUrl": "https://github.com/SamirShaikh05/Boundary-Vision/releases/download/models-v1/cricket_yolo26l_best.pt",
           "developmentSource": "cricket_yolo26l_best.pt",
+          "format": "ultralytics-yolo"
+        },
+        {
+          "version": "highres-refined-v2",
+          "checkpointFilename": "cricket_yolo26l_highres_refined_v2.pt",
+          "expectedSizeBytes": 52993061,
+          "sha256": "c86c1b044cd23c29b1db3d2e0142d96d9ba09f57dceec9e89ba0e03e3cd8b568",
+          "downloadUrl": "https://github.com/SamirShaikh05/Boundary-Vision/releases/download/models-v2/cricket_yolo26l_highres_refined_v2.pt",
+          "developmentSource": "cricket_yolo26l_highres_refined_v2.pt",
           "format": "ultralytics-yolo"
         }
       ]

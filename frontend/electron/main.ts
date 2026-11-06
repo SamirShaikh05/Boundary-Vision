@@ -57,6 +57,26 @@ function writeLabelImgPreference(value: LabelImgPreference) {
   fs.writeFileSync(temporary, JSON.stringify(settings, null, 2), 'utf8')
   fs.renameSync(temporary, settingsPath)
 }
+type PickerLocationKey = 'imageFiles' | 'imageFolder' | 'outputFolder'
+function readPickerLocation(key: PickerLocationKey): string | undefined {
+  try {
+    const value = JSON.parse(fs.readFileSync(settingsPath, 'utf8')).pickerLocations?.[key]
+    return typeof value === 'string' && directoryExists(value) ? value : undefined
+  } catch { return undefined }
+}
+function writePickerLocation(key: PickerLocationKey, directory: string) {
+  let settings: Record<string, unknown> = {}
+  try { settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8')) } catch { /* First launch. */ }
+  const storedLocations = settings.pickerLocations
+  const locations = storedLocations && typeof storedLocations === 'object' && !Array.isArray(storedLocations)
+    ? storedLocations as Record<string, unknown>
+    : {}
+  settings.pickerLocations = { ...locations, [key]: directory }
+  fs.mkdirSync(path.dirname(settingsPath), { recursive: true })
+  const temporary = `${settingsPath}.${randomUUID()}.tmp`
+  fs.writeFileSync(temporary, JSON.stringify(settings, null, 2), 'utf8')
+  fs.renameSync(temporary, settingsPath)
+}
 function getLabelImgConfig(message?: string): LabelImgConfig {
   const preference = readLabelImgPreference()
   const directory = preference.path
@@ -306,16 +326,36 @@ app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(
 app.on('before-quit', () => { activeWorker?.kill() })
 
 ipcMain.handle('dialog:images', async () => {
-  const result = await dialog.showOpenDialog(mainWindow!, { properties: ['openFile', 'multiSelections'], filters: [{ name: 'Images', extensions: [...imageExtensions].map(ext => ext.slice(1)) }] })
-  return result.canceled ? [] : result.filePaths
+  const result = await dialog.showOpenDialog(mainWindow!, { defaultPath: readPickerLocation('imageFiles'), properties: ['openFile', 'multiSelections'], filters: [{ name: 'Images', extensions: [...imageExtensions].map(ext => ext.slice(1)) }] })
+  if (result.canceled) return []
+  if (result.filePaths[0]) writePickerLocation('imageFiles', path.dirname(result.filePaths[0]))
+  return result.filePaths
+})
+ipcMain.handle('dialog:image-folder', async () => {
+  const result = await dialog.showOpenDialog(mainWindow!, { defaultPath: readPickerLocation('imageFolder'), properties: ['openDirectory'] })
+  if (result.canceled || !result.filePaths[0]) return []
+  writePickerLocation('imageFolder', result.filePaths[0])
+  const images: string[] = []
+  const visit = async (directory: string): Promise<void> => {
+    const entries = await fs.promises.readdir(directory, { withFileTypes: true })
+    for (const entry of entries) {
+      const entryPath = path.join(directory, entry.name)
+      if (entry.isDirectory()) await visit(entryPath)
+      else if (entry.isFile() && imageExtensions.has(path.extname(entry.name).toLowerCase())) images.push(entryPath)
+    }
+  }
+  await visit(result.filePaths[0])
+  return images.sort((a, b) => a.localeCompare(b))
 })
 ipcMain.handle('dialog:video', async () => {
   const result = await dialog.showOpenDialog(mainWindow!, { properties: ['openFile'], filters: [{ name: 'Videos', extensions: [...videoExtensions].map(ext => ext.slice(1)) }] })
   return result.canceled ? null : result.filePaths[0]
 })
 ipcMain.handle('dialog:output-directory', async () => {
-  const result = await dialog.showOpenDialog(mainWindow!, { properties: ['openDirectory', 'createDirectory'] })
-  return result.canceled ? null : result.filePaths[0]
+  const result = await dialog.showOpenDialog(mainWindow!, { defaultPath: readPickerLocation('outputFolder'), properties: ['openDirectory', 'createDirectory'] })
+  if (result.canceled || !result.filePaths[0]) return null
+  writePickerLocation('outputFolder', result.filePaths[0])
+  return result.filePaths[0]
 })
 ipcMain.handle('labelimg:config', () => getLabelImgConfig())
 ipcMain.handle('labelimg:choose-folder', () => chooseLabelImgFolder())
@@ -385,7 +425,7 @@ ipcMain.handle('labelimg:launch', async () => {
   catch (error) { return getLabelImgConfig(error instanceof Error ? error.message : 'Could not launch LabelImg.') }
 })
 ipcMain.handle('labelimg:open', async (_event, values: unknown, format: unknown, initialDirectory: unknown) => {
-  if (!Array.isArray(values) || values.length < 1 || values.length > 500 || !['yolo', 'voc'].includes(String(format))) throw new Error('Choose completed image results and a supported LabelImg format.')
+  if (!Array.isArray(values) || values.length < 1 || !['yolo', 'voc'].includes(String(format))) throw new Error('Choose completed image results and a supported LabelImg format.')
   const results: LabelImgResult[] = values.map(value => {
     if (!value || typeof value !== 'object') throw new Error('Invalid image result.')
     const candidate = value as LabelImgResult
@@ -481,7 +521,7 @@ ipcMain.handle('backend:process-images', async (_event, payload: unknown) => {
   if (updateInstallationRequested) throw new Error('The application is preparing to install an update. Try again after it restarts.')
   if (!payload || typeof payload !== 'object') throw new Error('Processing request is invalid.')
   const p = payload as Record<string, unknown>
-  if (!Array.isArray(p.paths) || p.paths.length < 1 || p.paths.length > 500 || !(p.paths as unknown[]).every(item => typeof item === 'string')) throw new Error('Choose between 1 and 500 image files.')
+  if (!Array.isArray(p.paths) || p.paths.length < 1 || !(p.paths as unknown[]).every(item => typeof item === 'string')) throw new Error('Choose one or more image files.')
   const paths = (p.paths as string[]).map(value => path.resolve(value))
   if (paths.some(file => !fs.existsSync(file) || !fs.statSync(file).isFile() || !imageExtensions.has(path.extname(file).toLowerCase()))) throw new Error('A selected input is missing or is not a supported image.')
   if (typeof p.outputDir !== 'string' || !path.isAbsolute(p.outputDir) || !fs.existsSync(p.outputDir) || !fs.statSync(p.outputDir).isDirectory()) throw new Error('Choose an existing output folder.')

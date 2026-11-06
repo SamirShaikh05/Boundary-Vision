@@ -745,6 +745,17 @@ button:focus-visible, input:focus-visible, select:focus-visible {
   text-align: center;
 }
 
+.image-picker-options {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.image-picker-options .dropzone {
+  min-height: 150px;
+  padding: 18px 12px;
+}
+
 .dropzone:hover:not(:disabled) {
   border-color: var(--brand-primary);
   background: rgba(16, 185, 129, 0.04);
@@ -1583,6 +1594,10 @@ button:focus-visible, input:focus-visible, select:focus-visible {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
   gap: 16px;
+  max-height: 640px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 2px 8px 8px 2px;
 }
 
 .result-card {

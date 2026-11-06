@@ -183,6 +183,15 @@ export default function App() {
 
   async function selectImages() {
     const selected = await window.boundaryVision.chooseImages()
+    addImages(selected)
+  }
+
+  async function selectImageFolder() {
+    const selected = await window.boundaryVision.chooseImageFolder()
+    addImages(selected)
+  }
+
+  function addImages(selected: string[]) {
     if (selected.length) {
       setFiles(current => [...new Set([...current, ...selected])])
       setError('')
@@ -1046,20 +1055,20 @@ export default function App() {
                     </>
                   ) : (
                     <>
-                      <button
-                        className={`dropzone ${files.length ? 'has-files' : ''}`}
-                        onClick={selectImages}
-                        disabled={running}
-                      >
-                        <span className="upload-icon">
-                          <Plus size={20} />
-                        </span>
-                        <span className="drop-title">{files.length ? 'Add more images' : 'Choose image files'}</span>
-                        <span className="drop-caption">Select single or multiple match photos (JPG, PNG, WebP)</span>
-                        <span className="browse-label">
-                          <FolderOpen size={14} /> Browse images
-                        </span>
-                      </button>
+                      <div className="image-picker-options">
+                        <button className="dropzone" onClick={selectImages} disabled={running}>
+                          <span className="upload-icon"><Plus size={20} /></span>
+                          <span className="drop-title">Select Files</span>
+                          <span className="drop-caption">Choose one or multiple image files</span>
+                          <span className="browse-label"><FolderOpen size={14} /> Browse files</span>
+                        </button>
+                        <button className="dropzone" onClick={selectImageFolder} disabled={running}>
+                          <span className="upload-icon"><FolderOpen size={20} /></span>
+                          <span className="drop-title">Select Folder</span>
+                          <span className="drop-caption">Load supported images from a folder</span>
+                          <span className="browse-label"><FolderOpen size={14} /> Browse folder</span>
+                        </button>
+                      </div>
 
                       {files.length > 0 && (
                         <div className="file-list">

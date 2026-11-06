@@ -78,6 +78,7 @@ declare global {
       launchLabelImg: () => Promise<LabelImgConfig>
       openLabelImg: (results: LabelImgResult[], format: 'yolo' | 'voc', initialDirectory: string | null) => Promise<string | null>
       chooseImages: () => Promise<string[]>
+      chooseImageFolder: () => Promise<string[]>
       chooseVideo: () => Promise<string | null>
       chooseOutputDirectory: () => Promise<string | null>
       previewImage: (path: string) => Promise<string>

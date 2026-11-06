@@ -18,6 +18,7 @@ contextBridge.exposeInMainWorld('boundaryVision', {
   launchLabelImg: () => ipcRenderer.invoke('labelimg:launch'),
   openLabelImg: (results: unknown[], format: 'yolo' | 'voc', initialDirectory: string | null) => ipcRenderer.invoke('labelimg:open', results, format, initialDirectory),
   chooseImages: () => ipcRenderer.invoke('dialog:images'),
+  chooseImageFolder: () => ipcRenderer.invoke('dialog:image-folder'),
   chooseVideo: () => ipcRenderer.invoke('dialog:video'),
   chooseOutputDirectory: () => ipcRenderer.invoke('dialog:output-directory'),
   previewImage: (path: string) => ipcRenderer.invoke('result:preview', path),
