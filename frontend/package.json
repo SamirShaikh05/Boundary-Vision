@@ -1,6 +1,6 @@
 {
   "name": "boundary-vision",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "author": "Boundary Vision",
   "description": "Local cricket object detection desktop application",

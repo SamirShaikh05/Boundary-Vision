@@ -10,25 +10,25 @@ The app is for cricket coaches, analysts, researchers, and anyone who wants to r
 
 **[Download Boundary Vision for Windows x64](https://github.com/SamirShaikh05/Boundary-Vision/releases/latest)** · [All releases](https://github.com/SamirShaikh05/Boundary-Vision/releases)
 
-The current public application release is **0.1.0**. Its installer is unsigned. Model installation, real model inference, video processing, and application updates have not all been verified end to end on a clean Windows computer. See the [release validation checklist](docs/RELEASE_VALIDATION.md) for the remaining checks.
+The latest public application release is **0.1.1**. Its installer is unsigned. Model installation, real model inference, video processing, and application updates have not all been verified end to end on a clean Windows computer. See the [release validation checklist](docs/RELEASE_VALIDATION.md) for the remaining checks.
 
 ## 2. Application Screenshots
 
-There are no application screenshots in the repository yet. The checked-in PNG is the application icon, not a screenshot. Screenshots should be captured from the running application before being added here; planned captures are listed in the final report for this README update.
+There are no application screenshots in the repository yet. The checked-in PNG is the application icon, not a screenshot.
 
 ## 3. Features and Capabilities
 
 | Feature | What you can do |
 |---|---|
 | Image detection | Inspect one image, see detected objects and confidence scores, and save an image with bounding boxes. |
-| Batch processing | Select multiple image files and process them in one run with progress and cancellation controls. |
+| Image selection and batch processing | Select multiple files or a folder of supported images, then process the selection with progress and cancellation controls. There is no artificial 500-image selection limit. |
 | Video detection | Create an annotated MP4, choose model-sampling and output frame rates separately, and view the result in the app. Video work requires FFmpeg and FFprobe, which the app can download when needed. |
-| Model Manager | Install, verify, select, update, and remove eligible managed model versions. |
+| Model Manager | Install, verify, select, update, and remove eligible managed model versions. Checkpoints are verified by file size and SHA-256 before use. |
 | Annotation export | Write labels as YOLO TXT, Pascal VOC XML, or CreateML JSON. |
 | LabelImg integration | Copy completed image results into a dataset with YOLO or Pascal VOC labels, then open it in the external LabelImg editor. |
 | Application updates | Check the configured GitHub Releases feed, download an update when available, and choose when to restart and install it. |
 
-Boundary Vision includes two model options. **YOLO26n** is the lightweight choice intended for lower resource use. **YOLO26l** is the larger model for users who want to try that model and have more capable hardware. No performance or accuracy benchmarks are provided here.
+Boundary Vision includes two model options. **YOLO26n** is the lightweight choice intended for lower resource use. **YOLO26l** is the larger model for users who want to try that model and have more capable hardware. The current V2 checkpoints for both YOLO26n and YOLO26l were trained using a dataset approximately twice as large as the dataset used for their V1 checkpoints. This describes training-data size; it is not a measured accuracy or performance result, and no benchmark results are published here.
 
 The app offers the devices reported by its inference runtime. CPU is available; the packaged release worker is CPU-only, so a GPU option may not appear in the installed app. A GPU may be offered in a development environment if that environment supports it.
 
@@ -50,7 +50,7 @@ The documented Windows development and packaging environment uses Node.js `26.11
 ## 5. Download and Installation
 
 1. Open the [official Boundary Vision Releases page](https://github.com/SamirShaikh05/Boundary-Vision/releases/latest).
-2. In the latest release's **Assets** section, download `Boundary-Vision-Setup-0.1.0-x64.exe`. For a later release, use the installer filename shown on that release page. The current installer is for Windows x64.
+2. In the latest release's **Assets** section, download the `Boundary-Vision-Setup-…-x64.exe` installer shown there. The installer is for Windows x64; its filename includes the application version.
 3. Open the downloaded installer and follow the setup prompts. Choose an installation location if asked.
 4. Finish installation and launch Boundary Vision from the Start menu or desktop shortcut.
 
@@ -70,7 +70,7 @@ On a new installation with no selected model, Boundary Vision opens **Model Mana
 
 Before activation, the app checks the file size and SHA-256 checksum, then asks its inference worker to load the model and validate its classes. A failed download or validation is rejected and does not replace the previously selected model. The version card shows the error; retry by choosing its install action again. These checks establish file integrity and runtime loading, not detection accuracy.
 
-Model Manager fetches a remote registry and falls back to the bundled registry if the remote registry cannot be reached or validated. Downloading model files still requires an internet connection. The checkpoint assets are hosted in the [`models-v1` release](https://github.com/SamirShaikh05/Boundary-Vision/releases/tag/models-v1). Packaged hosted installation and real inference have not yet been verified end to end; if an installation fails, keep using the existing selected model and retry later.
+Model Manager fetches a remote registry and falls back to the bundled registry if the remote registry cannot be reached or validated. Downloading model files still requires an internet connection. V1 checkpoints are in the [`models-v1` release](https://github.com/SamirShaikh05/Boundary-Vision/releases/tag/models-v1); the current V2 checkpoints are in the [`models-v2` release](https://github.com/SamirShaikh05/Boundary-Vision/releases/tag/models-v2). YOLO26n's latest version is `finetuned-v2`; YOLO26l's is `highres-refined-v2`. Both V2 models use approximately twice the training data used for their V1 counterparts. Existing installations can choose **Check for model updates** to refresh the registry and install these versions independently of an application update. The app verifies each download's size and SHA-256 and then checks that the inference runtime can load the model and validate its classes. These checks do not establish detection accuracy.
 
 To manage installed models:
 
@@ -82,13 +82,13 @@ To manage installed models:
 ## 7. Image Detection Tutorial
 
 1. Choose **Images** in the left navigation rail.
-2. Choose **Browse images** and select an image from any folder on your computer. Supported file types include JPG/JPEG, PNG, BMP, WebP, TIF, and TIFF.
+2. Choose **Select Files** to pick one or multiple image files, or **Select Folder** to load all supported images in that folder and its subfolders. Supported file types include JPG/JPEG, PNG, BMP, WebP, TIF, and TIFF. The file picker has no fixed maximum selection count.
 3. Under **Inference Settings**, select an installed **Detection Model**. Use **Manage Models** if you need to install one.
 4. Adjust **Confidence Threshold** if needed. Confidence is the model's score for a proposed object. A higher threshold accepts fewer, more confident detections; a lower threshold may show more uncertain detections. The control ranges from 5% to 95%.
 5. Choose a **Processing Device** from the available options. The packaged worker is CPU-only; use a GPU only if a GPU device is actually listed by the running environment.
-6. Choose a folder with **Save Results To**. You can select an existing writable folder anywhere on your computer.
+6. Choose a folder with **Save Results To**. You can select an existing writable folder anywhere on your computer. The image-file, image-folder, and output-folder pickers each remember their last location and use it only as the starting location next time; they do not reselect previous files or folders.
 7. Keep **Annotated Images** enabled to save a copy with boxes drawn around detected objects. Optionally select one annotation format under **Output Formats**.
-8. Choose **Run Detection**. Results appear below the controls. Each result shows the source name, model, detected class labels, and confidence scores. Select an image preview to enlarge it.
+8. Choose **Run Detection**. Results appear below the controls. The preview/results grid is height-limited and scrolls when it contains many images. Each result shows the source name, model, detected class labels, and confidence scores. Select an image preview to enlarge it.
 
 A **bounding box** is a rectangle around a detected object. Its class label says what the model thinks the object is; the confidence score shows how strongly the model made that prediction. If no object passes the selected confidence threshold, the result reports no objects above threshold.
 
@@ -96,12 +96,12 @@ Annotated images are saved in the chosen output folder using the source name wit
 
 ## 8. Batch Image Processing Tutorial
 
-1. In **Images**, choose **Browse images** and select multiple files in the file picker. The picker selects files, not entire folders. Choose **Add more images** to select files from another location.
+1. In **Images**, use **Select Files** to select multiple files, or **Select Folder** to add supported images from a folder and its subfolders. You can use either option again to add more images from another location. The selection has no fixed maximum count.
 2. Remove an individual file with its remove button or choose **Clear all**.
 3. Select a model, confidence threshold, processing device, output folder, and output formats as described in the image tutorial.
 4. Choose **Batch Size**: **Automatic (1)**, **1 image**, **2 images**, or **4 images**. Batch size is how many images are passed through processing together. Larger batches can use more memory; Automatic currently uses one image.
 5. Choose **Run Detection**. The status line and result area show completed images and progress.
-6. Choose **Cancel** to request that the current run stop.
+6. Choose **Cancel** to request that the current run stop. The results area remains height-limited and scrollable as results accumulate.
 
 The app saves each completed image's outputs in the selected output folder. If an input image cannot be read or processing stops, Boundary Vision shows an error; it does not provide a separate list of skipped images. Outputs already completed are kept.
 
